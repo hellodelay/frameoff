@@ -15,12 +15,14 @@ import {
   getCachedAuthUser,
   getEffectiveClientId,
   getPickerSession,
+  hasPickerScope,
   importLocalPhotos,
   importPickerPhotos,
   initGoogleTokenClient,
   isTokenValid,
   listPickerMediaItems,
   requestLogin,
+  requestLoginWithConsent,
   saveCachedAuthUser,
   syncAlbumToCache,
 } from './services/googlePhotos';
@@ -308,8 +310,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentView, handleNextPhoto, handlePrevPhoto, showControlsTemporarily]);
 
-  // Google OAuth Login (switchUser: true prompts account chooser)
-  const handleConnectGoogle = (switchUser: boolean = false) => {
+  // Google OAuth Login (switchUser: true prompts account chooser; prompt 'consent' ensures picker scope is granted)
+  const handleConnectGoogle = async (switchUser: boolean = false) => {
     const effectiveClientId = settings.googleClientId || getEffectiveClientId();
     if (!effectiveClientId) {
       setShowSettingsModal(true);
@@ -317,75 +319,106 @@ export default function App() {
     }
 
     try {
-      tokenClientRef.current = initGoogleTokenClient(
+      const user = await requestLoginWithConsent(
         effectiveClientId,
-        async (user) => {
-          setAuthUser(user);
-          // Fetch user's albums
-          try {
-            const result = await fetchGoogleAlbums(user.accessToken);
-            if (result.albums.length > 0) {
-              setAlbumFetchError(null);
-              // Merge with sample album
-              const merged = [SAMPLE_ALBUM, ...result.albums];
-              setAlbums(merged);
-              for (const a of result.albums) {
-                await db.saveAlbum(a);
-              }
-              // Open album picker to let user choose their album
-              setShowAlbumModal(true);
-            } else {
-              setAlbumFetchError(
-                result.error ||
-                  'Google now restricts third-party access to the full albums list. Please use the "Pick from Google Photos" button to select photos or albums directly.'
-              );
-              setShowAlbumModal(true);
-            }
-          } catch (err: any) {
-            console.warn('Failed to load Google Photos albums:', err);
-            setAlbumFetchError(
-              'Google Photos direct album listing is restricted by Google. Click "Pick from Google Photos" to select photos directly.'
-            );
-            setShowAlbumModal(true);
-          }
-        },
-        (err) => {
-          alert(`Google Sign-In Note: ${err}\n\nPlease verify your Google OAuth Client ID in Settings.`);
-        }
+        switchUser ? 'select_account' : 'consent'
       );
+      setAuthUser(user);
 
-      if (tokenClientRef.current) {
-        requestLogin(tokenClientRef.current, switchUser ? 'select_account' : false);
+      // Fetch user's albums (legacy API check or notify user to use Picker)
+      try {
+        const result = await fetchGoogleAlbums(user.accessToken);
+        if (result.albums.length > 0) {
+          setAlbumFetchError(null);
+          const merged = [SAMPLE_ALBUM, ...result.albums];
+          setAlbums(merged);
+          for (const a of result.albums) {
+            await db.saveAlbum(a);
+          }
+          setShowAlbumModal(true);
+        } else {
+          setAlbumFetchError(
+            result.error ||
+              'Google now restricts third-party access to the full albums list. Please use the "Pick from Google Photos" button to select photos or albums directly.'
+          );
+          setShowAlbumModal(true);
+        }
+      } catch (err: any) {
+        console.warn('Failed to load Google Photos albums:', err);
+        setAlbumFetchError(
+          'Google Photos direct album listing is restricted by Google. Click "Pick from Google Photos" to select photos directly.'
+        );
+        setShowAlbumModal(true);
       }
     } catch (err: any) {
-      alert(`Could not start Google Sign In: ${err.message}`);
+      if (!err.message?.includes('popup_closed_by_user')) {
+        alert(`Google Sign-In Note: ${err.message}\n\nPlease verify your Google OAuth Client ID in Settings.`);
+      }
     }
   };
 
   // Google Photos Picker API Workflow
   const handleStartGooglePicker = async () => {
-    const token = authUser?.accessToken;
-    if (!token) {
-      handleConnectGoogle(false);
+    const effectiveClientId = settings.googleClientId || getEffectiveClientId();
+    if (!effectiveClientId) {
+      alert(
+        'A Google OAuth Client ID is required to connect to Google Photos. Please enter your Client ID in Settings, or use "Upload Device Photos" to load pictures directly from your device.'
+      );
+      setShowSettingsModal(true);
       return;
     }
 
     setIsPickingGooglePhotos(true);
+    let token = authUser?.accessToken;
+
+    // 1. Verify token exists and has modern Picker scope
+    if (!token || !isTokenValid(authUser) || !hasPickerScope(authUser)) {
+      try {
+        setSyncProgressText('Requesting Google Photos permission...');
+        const refreshedUser = await requestLoginWithConsent(effectiveClientId, 'consent');
+        setAuthUser(refreshedUser);
+        token = refreshedUser.accessToken;
+      } catch (authErr: any) {
+        setIsPickingGooglePhotos(false);
+        setSyncProgressText('');
+        console.warn('OAuth consent error or cancelled:', authErr);
+        if (authErr.message && !authErr.message.includes('popup_closed_by_user')) {
+          alert(`Google Authentication: ${authErr.message}`);
+        }
+        return;
+      }
+    }
+
     try {
-      // 1. Create a Picker session
-      const session = await createPickerSession(token);
+      // 2. Create a Picker session (with auto-upgrade retry if existing token lacked scope)
+      let session;
+      try {
+        session = await createPickerSession(token);
+      } catch (sessionErr: any) {
+        if (sessionErr.message === 'INSUFFICIENT_SCOPES') {
+          // The token in memory lacked the photospicker scope. Prompt user for consent to upgrade scope.
+          setSyncProgressText('Updating permissions for Google Photos Picker...');
+          const refreshedUser = await requestLoginWithConsent(effectiveClientId, 'consent');
+          setAuthUser(refreshedUser);
+          token = refreshedUser.accessToken;
+          session = await createPickerSession(token);
+        } else {
+          throw sessionErr;
+        }
+      }
+
       if (!session || !session.pickerUri) {
         throw new Error('Unable to create Google Photos picker session.');
       }
 
-      // 2. Open Picker in a popup
+      // 3. Open Picker in a popup window
       const pickerPopup = window.open(
         session.pickerUri,
         'GooglePhotosPicker',
         'width=920,height=750,menubar=no,toolbar=no'
       );
 
-      // 3. Poll picker session until user selects photos (mediaItemsSet === true)
+      // 4. Poll picker session until user selects photos (mediaItemsSet === true)
       let sessionFinished = false;
       const startTime = Date.now();
       const maxWaitMs = 15 * 60 * 1000; // 15 minutes timeout
@@ -413,7 +446,7 @@ export default function App() {
       }
 
       if (sessionFinished) {
-        // 4. Retrieve picked media items
+        // 5. Retrieve picked media items
         const pickedItems = await listPickerMediaItems(session.id, token);
         if (pickedItems.length > 0) {
           setSyncState('syncing');
@@ -443,7 +476,7 @@ export default function App() {
           alert('No photos were selected in Google Photos.');
         }
 
-        // 5. Clean up session
+        // 6. Clean up session
         try {
           await deletePickerSession(session.id, token);
         } catch {
@@ -452,9 +485,15 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Picker API error:', err);
-      alert(
-        `Google Photos Picker Notice: ${err.message || err}\n\nTip: You can also use the 'Upload Photos' button to import photos directly from your device into the offline frame.`
-      );
+      if (err.message === 'INSUFFICIENT_SCOPES') {
+        alert(
+          'Google Photos Permission Needed:\n\nYour Google account has not granted permission to access Google Photos.\n\nPlease click "Pick from Google Photos" again and make sure to check the box granting photo access on Google\'s consent screen.\n\nAlso make sure "Google Photos Picker API" is enabled in your Google Cloud Console (APIs & Services > Library).'
+        );
+      } else {
+        alert(
+          `Google Photos Picker Notice: ${err.message || err}\n\nTip: You can also use the "Upload Device Photos" button to import photos directly from your device into the offline frame without Google cloud setup.`
+        );
+      }
     } finally {
       setIsPickingGooglePhotos(false);
       setSyncState('idle');

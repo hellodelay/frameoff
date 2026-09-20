@@ -14,6 +14,7 @@ declare global {
             callback: (response: {
               access_token?: string;
               expires_in?: number;
+              scope?: string;
               error?: string;
               error_description?: string;
             }) => void;
@@ -29,10 +30,9 @@ declare global {
 const STORAGE_KEY_AUTH = 'gphotos_auth_user';
 const STORAGE_KEY_CLIENT_ID = 'gphotos_custom_client_id';
 
-// Scopes for Google Photos (both modern Picker API and legacy Library API)
+// Scopes for Google Photos modern Picker API
 export const GOOGLE_PHOTOS_SCOPES = [
   'https://www.googleapis.com/auth/photospicker.mediaitems.readonly',
-  'https://www.googleapis.com/auth/photoslibrary.readonly',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/userinfo.email',
 ].join(' ');
@@ -172,6 +172,7 @@ export function initGoogleTokenClient(
           picture,
           accessToken: response.access_token,
           expiresAt,
+          scope: response.scope,
         };
 
         saveCachedAuthUser(authUser);
@@ -184,6 +185,7 @@ export function initGoogleTokenClient(
           picture: '',
           accessToken: response.access_token,
           expiresAt,
+          scope: response.scope,
         };
         saveCachedAuthUser(authUser);
         onSuccess(authUser);
@@ -192,6 +194,96 @@ export function initGoogleTokenClient(
   });
 
   return tokenClientInstance;
+}
+
+/**
+ * Checks whether the current user has the modern Google Photos Picker scope.
+ */
+export function hasPickerScope(user: AuthUser | null): boolean {
+  if (!user || !user.accessToken) return false;
+  // If user has a scope string and it lacks photospicker, return false
+  if (user.scope && !user.scope.includes('photospicker.mediaitems.readonly')) {
+    return false;
+  }
+  // If no scope string recorded (from previous session before scope tracking), consider it untrusted
+  if (!user.scope) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Request OAuth consent explicitly (e.g. prompt: 'consent') to ensure Google
+ * presents the permission screen with Google Photos Picker scope.
+ */
+export function requestLoginWithConsent(
+  clientId: string,
+  promptType: 'consent' | 'select_account' | '' = 'consent'
+): Promise<AuthUser> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || !window.google?.accounts?.oauth2) {
+      reject(new Error('Google Identity Services SDK is not loaded. Please wait a moment and try again.'));
+      return;
+    }
+    if (!clientId) {
+      reject(new Error('Google OAuth Client ID is missing. Please configure it in Settings.'));
+      return;
+    }
+
+    try {
+      const client = window.google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: GOOGLE_PHOTOS_SCOPES,
+        callback: async (response: any) => {
+          if (response.error) {
+            reject(new Error(response.error_description || response.error));
+            return;
+          }
+          if (!response.access_token) {
+            reject(new Error('No access token received from Google.'));
+            return;
+          }
+
+          const expiresIn = response.expires_in || 3600;
+          const expiresAt = Date.now() + expiresIn * 1000;
+
+          let name = 'Google Photos User';
+          let email = '';
+          let picture = '';
+
+          try {
+            const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+              headers: { Authorization: `Bearer ${response.access_token}` },
+            });
+            if (userInfoRes.ok) {
+              const profile = await userInfoRes.json();
+              name = profile.name || name;
+              email = profile.email || email;
+              picture = profile.picture || picture;
+            }
+          } catch {
+            // ignore
+          }
+
+          const authUser: AuthUser = {
+            name,
+            email,
+            picture,
+            accessToken: response.access_token,
+            expiresAt,
+            scope: response.scope,
+          };
+
+          saveCachedAuthUser(authUser);
+          resolve(authUser);
+        },
+      });
+
+      client.requestAccessToken({ prompt: promptType });
+    } catch (e: any) {
+      reject(e);
+    }
+  });
 }
 
 /**
@@ -390,6 +482,16 @@ export async function createPickerSession(accessToken: string): Promise<PickerSe
       const errData = await res.json();
       msg = errData.error?.message || msg;
     } catch {}
+
+    const lowerMsg = msg.toLowerCase();
+    if (
+      lowerMsg.includes('insufficient auth scopes') ||
+      lowerMsg.includes('scope_insufficient') ||
+      lowerMsg.includes('insufficient scope')
+    ) {
+      throw new Error('INSUFFICIENT_SCOPES');
+    }
+
     if (msg.includes('disabled') || msg.includes('has not been used')) {
       throw new Error(
         'Google Photos Picker API is not enabled. In Google Cloud Console, go to APIs & Services > Library, search for "Google Photos Picker API", and click Enable.'

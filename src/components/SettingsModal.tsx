@@ -501,8 +501,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                   {showOAuthHelp && (
                     <div className="mt-3 p-3.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 space-y-2 leading-relaxed">
-                      <p className="font-semibold text-white">How to enable login for any user:</p>
-                      <ol className="list-decimal list-inside space-y-1 text-zinc-300">
+                      <p className="font-semibold text-white">How to configure Google Cloud Console:</p>
+                      <ol className="list-decimal list-inside space-y-1.5 text-zinc-300">
+                        <li>
+                          In{' '}
+                          <a
+                            href="https://console.cloud.google.com/apis/library/photospicker.googleapis.com"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-400 underline"
+                          >
+                            APIs & Services &rarr; Library
+                          </a>
+                          , enable the <strong>Google Photos Picker API</strong>.
+                        </li>
                         <li>
                           Open{' '}
                           <a
@@ -511,17 +523,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             rel="noreferrer"
                             className="text-blue-400 underline"
                           >
-                            Google Cloud Console &rarr; OAuth Consent Screen
+                            OAuth Consent Screen
                           </a>
+                          : Select <strong>External</strong>, or if in Testing mode, add your email under <strong>Test users</strong>. Under Scopes, add <code>.../auth/photospicker.mediaitems.readonly</code>.
                         </li>
                         <li>
-                          Select <strong>User Type: External</strong> (this allows any public Google account to sign in, not just test users).
+                          In <strong>Credentials</strong>, create an <strong>OAuth 2.0 Client ID</strong> (Application type: Web application).
                         </li>
                         <li>
-                          In <strong>Credentials</strong>, create an <strong>OAuth 2.0 Client ID</strong> (Web Application).
-                        </li>
-                        <li>
-                          Add this site's URL to <strong>Authorized JavaScript origins</strong>.
+                          Add this site's URL (<code>{window.location.origin}</code>) to <strong>Authorized JavaScript origins</strong>.
                         </li>
                         <li>
                           Copy the Client ID and paste it in the box above!

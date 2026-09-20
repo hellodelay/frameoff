@@ -58,6 +58,7 @@ export interface AuthUser {
   picture: string;
   accessToken: string;
   expiresAt: number;
+  scope?: string;
 }
 
 export type SyncState = 'idle' | 'syncing' | 'offline' | 'success' | 'error';
