@@ -88,15 +88,15 @@ async function startServer() {
     }
   });
 
-  // Google Photos Shared Album link resolver & photo extractor
-  app.post('/api/fetch-shared-album', async (req, res) => {
+  // Google Photos Shared Album link resolver & photo extractor (supports both GET and POST)
+  const handleFetchSharedAlbum = async (req: express.Request, res: express.Response) => {
     try {
-      const { url } = req.body;
-      if (!url || typeof url !== 'string') {
+      const rawUrl = (req.method === 'GET' ? req.query.url : req.body?.url) as string;
+      if (!rawUrl || typeof rawUrl !== 'string') {
         return res.status(400).json({ error: 'Missing or invalid shared album url' });
       }
 
-      const trimmedUrl = url.trim();
+      const trimmedUrl = rawUrl.trim();
       let parsedUrl: URL;
       try {
         parsedUrl = new URL(trimmedUrl);
@@ -111,13 +111,41 @@ async function startServer() {
         });
       }
 
-      // Fetch the page, following redirects to get full album HTML
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 20000);
 
+      let targetUrl = trimmedUrl;
+
+      // 1. If this is a shortened goo.gl link, resolve the redirect manually with explicit GET
+      if (host.includes('photos.app.goo.gl')) {
+        try {
+          const redirectRes = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+            redirect: 'manual',
+            signal: controller.signal,
+          });
+
+          if (redirectRes.status >= 300 && redirectRes.status < 400) {
+            const loc = redirectRes.headers.get('location');
+            if (loc) {
+              targetUrl = new URL(loc, targetUrl).toString();
+            }
+          }
+        } catch (redirErr) {
+          console.warn('[Fetch Shared Album] Short URL redirect note:', redirErr);
+        }
+      }
+
+      // 2. Fetch the target album HTML page with explicit GET
       let response: Response;
       try {
-        response = await fetch(trimmedUrl, {
+        response = await fetch(targetUrl, {
+          method: 'GET',
           headers: {
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -133,8 +161,12 @@ async function startServer() {
       }
 
       if (!response.ok) {
+        let hint = '';
+        if (response.status === 405) {
+          hint = ' Google Photos returned 405. Please open the album link in your browser and copy the full URL from the browser address bar (photos.google.com/share/...).';
+        }
         return res.status(response.status).json({
-          error: `Failed to load album (${response.status} ${response.statusText}). Check that the link is accessible.`,
+          error: `Failed to load album (${response.status} ${response.statusText}).${hint}`,
         });
       }
 
@@ -204,13 +236,16 @@ async function startServer() {
         coverPhotoBaseUrl,
         count: photos.length,
         photos,
-        canonicalUrl: response.url || trimmedUrl,
+        canonicalUrl: response.url || targetUrl,
       });
     } catch (err: any) {
       console.error('[Fetch Shared Album] Error:', err);
       res.status(500).json({ error: 'Failed to process shared album link', details: err?.message });
     }
-  });
+  };
+
+  app.get('/api/fetch-shared-album', handleFetchSharedAlbum);
+  app.post('/api/fetch-shared-album', handleFetchSharedAlbum);
 
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV !== 'production') {

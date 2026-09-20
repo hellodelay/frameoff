@@ -910,17 +910,32 @@ export interface SharedAlbumInfo {
 }
 
 export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo> {
-  const res = await fetch('/api/fetch-shared-album', {
+  // Try POST first
+  let res = await fetch('/api/fetch-shared-album', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
   });
 
+  // If 405 Method Not Allowed or 404, fallback to GET query
+  if (res.status === 405 || res.status === 404) {
+    try {
+      const getRes = await fetch(`/api/fetch-shared-album?url=${encodeURIComponent(url)}`, {
+        method: 'GET',
+      });
+      if (getRes.ok) {
+        res = getRes;
+      }
+    } catch {
+      // Keep original response for error reporting
+    }
+  }
+
   if (!res.ok) {
     let msg = `Server error (${res.status})`;
     try {
       const err = await res.json();
-      msg = err.error || msg;
+      msg = err.error || err.details || msg;
     } catch {}
     throw new Error(msg);
   }
