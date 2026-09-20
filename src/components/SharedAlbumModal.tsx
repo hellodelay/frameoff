@@ -153,26 +153,49 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
               <label htmlFor="shared-url-input" className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
                 Google Photos Shared Link
               </label>
-              <button
-                type="button"
-                onClick={() => setShowHowTo(!showHowTo)}
-                className="text-xs text-amber-400 hover:text-amber-300 inline-flex items-center gap-1 transition-colors"
-              >
-                <HelpCircle className="w-3.5 h-3.5" />
-                <span>How to get this link?</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <a
+                  href="https://photos.google.com/sharing"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-purple-400 hover:text-purple-300 inline-flex items-center gap-1 transition-colors"
+                  title="Open Google Photos Sharing page in a new tab"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>View All Shared Albums</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowHowTo(!showHowTo)}
+                  className="text-xs text-amber-400 hover:text-amber-300 inline-flex items-center gap-1 transition-colors"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                  <span>How to get link</span>
+                </button>
+              </div>
             </div>
 
             {/* Expandable "How to get link" instructions */}
             {showHowTo && (
-              <div className="p-3.5 rounded-xl bg-zinc-800/80 border border-zinc-700/80 text-xs text-zinc-300 space-y-1.5 animate-in fade-in duration-200">
-                <p className="font-medium text-white">How to copy a shared album link in Google Photos:</p>
+              <div className="p-3.5 rounded-xl bg-zinc-800/80 border border-zinc-700/80 text-xs text-zinc-300 space-y-2 animate-in fade-in duration-200">
+                <p className="font-medium text-white">How to view your shared albums and copy their links:</p>
                 <ol className="list-decimal list-inside space-y-1 text-zinc-300 text-[11.5px]">
-                  <li>Open the <strong className="text-zinc-100">Google Photos app</strong> or visit <a href="https://photos.google.com" target="_blank" rel="noreferrer" className="text-amber-400 underline inline-flex items-center gap-0.5">photos.google.com <ExternalLink className="w-3 h-3 inline" /></a>.</li>
-                  <li>Tap the <strong className="text-zinc-100">"Sharing"</strong> or <strong className="text-zinc-100">"Albums"</strong> tab and open your shared album.</li>
+                  <li>
+                    Go to your Google Photos shared list at{' '}
+                    <a
+                      href="https://photos.google.com/sharing"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-purple-300 underline font-medium inline-flex items-center gap-0.5 hover:text-white"
+                    >
+                      photos.google.com/sharing <ExternalLink className="w-3 h-3 inline" />
+                    </a>{' '}
+                    (or open the Google Photos app and tap the <strong>&quot;Sharing&quot;</strong> tab).
+                  </li>
+                  <li>Click into any shared album from family, partner, or friends.</li>
                   <li>Click or tap the <strong className="text-zinc-100">Share icon</strong> (or three dots <strong className="text-zinc-100">⋮</strong> &gt; <strong className="text-zinc-100">Options</strong>).</li>
-                  <li>Select <strong className="text-zinc-100">"Create link"</strong> or <strong className="text-zinc-100">"Copy link"</strong>.</li>
-                  <li>Paste the copied link below!</li>
+                  <li>Select <strong className="text-zinc-100">&quot;Create link&quot;</strong> or <strong className="text-zinc-100">&quot;Copy link&quot;</strong>.</li>
+                  <li>Paste the copied link below — Pictorial will remember it and keep it synced!</li>
                 </ol>
               </div>
             )}
@@ -227,7 +250,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
             <div className="p-4 rounded-2xl bg-zinc-800/60 border border-zinc-700/80 flex items-center gap-4 animate-in fade-in duration-200">
               {albumPreview.coverPhotoBaseUrl ? (
                 <img
-                  src={`/api/proxy-photo?url=${encodeURIComponent(albumPreview.coverPhotoBaseUrl)}=w200-h200-c`}
+                  src={`/api/proxy-photo?url=${encodeURIComponent(`${albumPreview.coverPhotoBaseUrl.split('=')[0]}=w200-h200-c`)}`}
                   alt={albumPreview.title}
                   className="w-20 h-20 rounded-xl object-cover bg-zinc-900 shrink-0 border border-white/10 shadow-sm"
                   crossOrigin="anonymous"

@@ -946,44 +946,55 @@ export async function importSharedLinkAlbum(
   const existingUrlSet = new Set(existingPhotos.map((p) => p.description || ''));
 
   let addedCount = 0;
-  let firstCoverUrl = info.coverPhotoBaseUrl || '';
+  let firstCoverUrl = (info.coverPhotoBaseUrl || '').split('=')[0];
 
-  for (let i = 0; i < info.photos.length; i++) {
-    const item = info.photos[i];
-    if (existingIdSet.has(item.id) || existingUrlSet.has(item.baseUrl)) {
-      continue;
-    }
+  // Filter items that need to be downloaded
+  const itemsToDownload = info.photos.filter(
+    (item) => !existingIdSet.has(item.id) && !existingUrlSet.has(item.baseUrl)
+  );
 
-    if (onProgress) {
-      onProgress(i + 1, info.photos.length, item.filename);
-    }
+  let processedCount = 0;
+  const totalToDownload = itemsToDownload.length;
 
-    try {
-      // Fetch high quality photo via proxy
-      const downloadUrl = `${item.baseUrl}=w2048-h1536`;
-      const blob = await fetchPhotoBlob(downloadUrl);
+  // Process in concurrent batches of 4
+  const CONCURRENCY = 4;
+  for (let i = 0; i < itemsToDownload.length; i += CONCURRENCY) {
+    const batch = itemsToDownload.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (item) => {
+        try {
+          const cleanBase = item.baseUrl.split('=')[0];
+          const downloadUrl = `${cleanBase}=w2048-h1536`;
+          const blob = await fetchPhotoBlob(downloadUrl);
 
-      if (!firstCoverUrl) firstCoverUrl = item.baseUrl;
+          if (!firstCoverUrl) firstCoverUrl = cleanBase;
 
-      const cachedPhoto: CachedPhoto = {
-        id: item.id,
-        albumId,
-        filename: item.filename,
-        mimeType: 'image/jpeg',
-        description: item.baseUrl,
-        creationTime: new Date().toISOString(),
-        width: 1920,
-        height: 1080,
-        blob,
-        cachedAt: Date.now(),
-        sizeBytes: blob.size,
-      };
+          const cachedPhoto: CachedPhoto = {
+            id: item.id,
+            albumId,
+            filename: item.filename,
+            mimeType: 'image/jpeg',
+            description: cleanBase,
+            creationTime: new Date().toISOString(),
+            width: 1920,
+            height: 1080,
+            blob,
+            cachedAt: Date.now(),
+            sizeBytes: blob.size,
+          };
 
-      await db.savePhoto(cachedPhoto);
-      addedCount++;
-    } catch (err) {
-      console.warn(`[Shared Link] Could not download photo ${i + 1}:`, err);
-    }
+          await db.savePhoto(cachedPhoto);
+          addedCount++;
+        } catch (err) {
+          console.warn(`[Shared Link] Could not download photo ${item.filename}:`, err);
+        } finally {
+          processedCount++;
+          if (onProgress) {
+            onProgress(processedCount, totalToDownload, item.filename);
+          }
+        }
+      })
+    );
   }
 
   const cachedPhotos = await db.getPhotosByAlbum(albumId);

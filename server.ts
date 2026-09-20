@@ -112,16 +112,25 @@ async function startServer() {
       }
 
       // Fetch the page, following redirects to get full album HTML
-      const response = await fetch(trimmedUrl, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        redirect: 'follow',
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+      let response: Response;
+      try {
+        response = await fetch(trimmedUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+          redirect: 'follow',
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         return res.status(response.status).json({
@@ -145,7 +154,7 @@ async function startServer() {
       let coverPhotoBaseUrl: string | undefined = undefined;
       const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
       if (ogImageMatch && ogImageMatch[1]) {
-        coverPhotoBaseUrl = ogImageMatch[1];
+        coverPhotoBaseUrl = ogImageMatch[1].split('=')[0];
       }
 
       // Extract photo base URLs
