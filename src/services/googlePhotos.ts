@@ -29,8 +29,9 @@ declare global {
 const STORAGE_KEY_AUTH = 'gphotos_auth_user';
 const STORAGE_KEY_CLIENT_ID = 'gphotos_custom_client_id';
 
-// Default OAuth scopes for Google Photos Library access
+// Scopes for Google Photos (both modern Picker API and legacy Library API)
 export const GOOGLE_PHOTOS_SCOPES = [
+  'https://www.googleapis.com/auth/photospicker.mediaitems.readonly',
   'https://www.googleapis.com/auth/photoslibrary.readonly',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/userinfo.email',
@@ -211,10 +212,17 @@ export function requestLogin(tokenClient: any, option?: boolean | string) {
 }
 
 // Download image Blob with automatic fallback to proxy for tablets
-export async function fetchPhotoBlob(imageUrl: string): Promise<Blob> {
+export async function fetchPhotoBlob(imageUrl: string, accessToken?: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
   // 1. Try direct fetch
   try {
-    const res = await fetch(imageUrl, { mode: 'cors' });
+    const res = await fetch(imageUrl, {
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
+    });
     if (res.ok) {
       return await res.blob();
     }
@@ -222,18 +230,59 @@ export async function fetchPhotoBlob(imageUrl: string): Promise<Blob> {
     // Expected on strict CORS, fallback to proxy
   }
 
-  // 2. Try proxy endpoint
-  const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
-  const proxyRes = await fetch(proxyUrl);
-  if (!proxyRes.ok) {
-    throw new Error(`Failed to download photo: ${proxyRes.status} ${proxyRes.statusText}`);
+  // 2. Try proxy endpoint (dev server / custom backend)
+  try {
+    const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
+    const proxyRes = await fetch(proxyUrl, {
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
+    });
+    if (proxyRes.ok) {
+      return await proxyRes.blob();
+    }
+  } catch {
+    // Proxy unavailable (e.g. static hosting like GitHub Pages)
   }
-  return await proxyRes.blob();
+
+  // 3. Fallback: load image object and draw onto an offscreen canvas
+  return new Promise<Blob>((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || 1920;
+        canvas.height = img.naturalHeight || 1080;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('Canvas context unavailable'));
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Canvas conversion failed'));
+          },
+          'image/jpeg',
+          0.92
+        );
+      } catch (canvasErr) {
+        reject(canvasErr);
+      }
+    };
+    img.onerror = () => reject(new Error(`Could not load image: ${imageUrl}`));
+    img.src = imageUrl;
+  });
 }
 
-// Fetch list of albums from Google Photos
-export async function fetchGoogleAlbums(accessToken: string): Promise<Album[]> {
+export interface FetchAlbumsResult {
+  albums: Album[];
+  error?: string;
+  isApiDisabled?: boolean;
+}
+
+// Fetch list of albums from Google Photos (Library API)
+export async function fetchGoogleAlbums(accessToken: string): Promise<FetchAlbumsResult> {
   const albums: Album[] = [];
+  let detectedError: string | undefined = undefined;
+  let isApiDisabled = false;
 
   // 1. Fetch own albums
   try {
@@ -256,43 +305,302 @@ export async function fetchGoogleAlbums(accessToken: string): Promise<Album[]> {
           });
         }
       }
-    } else if (res.status === 401) {
-      throw new Error('TOKEN_EXPIRED');
+    } else {
+      if (res.status === 401) throw new Error('TOKEN_EXPIRED');
+      try {
+        const errorJson = await res.json();
+        const msg = errorJson.error?.message || res.statusText;
+        if (msg.includes('has not been used in project') || msg.includes('disabled')) {
+          isApiDisabled = true;
+          detectedError =
+            'Google Photos API is not enabled in your Google Cloud Console project. Enable it under APIs & Services > Library.';
+        } else if (res.status === 403) {
+          detectedError =
+            'Google Photos Library access was blocked (403). Use "Pick from Google Photos" with the Google Photos Picker API below to select albums or photos.';
+        } else {
+          detectedError = `Google Photos API error: ${msg}`;
+        }
+      } catch {
+        detectedError = `Google Photos API error (${res.status} ${res.statusText})`;
+      }
     }
   } catch (err: any) {
     if (err.message === 'TOKEN_EXPIRED') throw err;
     console.warn('Error fetching own albums:', err);
+    if (!detectedError) detectedError = err.message;
   }
 
   // 2. Fetch shared albums
-  try {
-    const resShared = await fetch('https://photoslibrary.googleapis.com/v1/sharedAlbums?pageSize=50', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
+  if (!isApiDisabled) {
+    try {
+      const resShared = await fetch('https://photoslibrary.googleapis.com/v1/sharedAlbums?pageSize=50', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-    if (resShared.ok) {
-      const data = await resShared.json();
-      if (data.sharedAlbums && Array.isArray(data.sharedAlbums)) {
-        for (const a of data.sharedAlbums) {
-          if (!albums.find((existing) => existing.id === a.id)) {
-            albums.push({
-              id: a.id,
-              title: `${a.title || 'Shared Album'} (Shared)`,
-              coverPhotoBaseUrl: a.coverPhotoBaseUrl,
-              mediaItemsCount: a.mediaItemsCount ? Number(a.mediaItemsCount) : undefined,
-            });
+      if (resShared.ok) {
+        const data = await resShared.json();
+        if (data.sharedAlbums && Array.isArray(data.sharedAlbums)) {
+          for (const a of data.sharedAlbums) {
+            if (!albums.find((existing) => existing.id === a.id)) {
+              albums.push({
+                id: a.id,
+                title: `${a.title || 'Shared Album'} (Shared)`,
+                coverPhotoBaseUrl: a.coverPhotoBaseUrl,
+                mediaItemsCount: a.mediaItemsCount ? Number(a.mediaItemsCount) : undefined,
+              });
+            }
           }
         }
       }
+    } catch (err) {
+      console.warn('Error fetching shared albums:', err);
     }
-  } catch (err) {
-    console.warn('Error fetching shared albums:', err);
   }
 
-  return albums;
+  return { albums, error: detectedError, isApiDisabled };
+}
+
+// -------------------------------------------------------------
+// Modern Google Photos Picker API (Sessions & Media Items)
+// -------------------------------------------------------------
+
+export interface PickerSession {
+  id: string;
+  pickerUri: string;
+  expireTime?: string;
+  mediaItemsSet?: boolean;
+}
+
+export async function createPickerSession(accessToken: string): Promise<PickerSession> {
+  const res = await fetch('https://photospicker.googleapis.com/v1/sessions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('TOKEN_EXPIRED');
+    let msg = res.statusText;
+    try {
+      const errData = await res.json();
+      msg = errData.error?.message || msg;
+    } catch {}
+    if (msg.includes('disabled') || msg.includes('has not been used')) {
+      throw new Error(
+        'Google Photos Picker API is not enabled. In Google Cloud Console, go to APIs & Services > Library, search for "Google Photos Picker API", and click Enable.'
+      );
+    }
+    throw new Error(`Google Photos Picker error: ${msg}`);
+  }
+
+  const data = await res.json();
+  return {
+    id: data.id,
+    pickerUri: data.pickerUri,
+    expireTime: data.expireTime,
+    mediaItemsSet: data.mediaItemsSet,
+  };
+}
+
+export async function getPickerSession(sessionId: string, accessToken: string): Promise<PickerSession> {
+  const res = await fetch(`https://photospicker.googleapis.com/v1/sessions/${sessionId}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('TOKEN_EXPIRED');
+    throw new Error(`Failed to check picker status (${res.status})`);
+  }
+
+  const data = await res.json();
+  return {
+    id: data.id,
+    pickerUri: data.pickerUri,
+    expireTime: data.expireTime,
+    mediaItemsSet: data.mediaItemsSet,
+  };
+}
+
+export async function listPickerMediaItems(sessionId: string, accessToken: string): Promise<any[]> {
+  const res = await fetch(`https://photospicker.googleapis.com/v1/mediaItems?sessionId=${sessionId}&pageSize=100`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('TOKEN_EXPIRED');
+    throw new Error(`Failed to retrieve picked photos: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data.mediaItems || [];
+}
+
+export async function deletePickerSession(sessionId: string, accessToken: string): Promise<void> {
+  try {
+    await fetch(`https://photospicker.googleapis.com/v1/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+export async function importPickerPhotos(
+  mediaItems: any[],
+  albumTitle: string,
+  accessToken: string,
+  onProgress?: (curr: number, total: number, name: string) => void
+): Promise<Album> {
+  if (!mediaItems || mediaItems.length === 0) {
+    throw new Error('No photos were selected.');
+  }
+
+  const albumId = `picker_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  let firstCoverUrl = '';
+
+  for (let i = 0; i < mediaItems.length; i++) {
+    const item = mediaItems[i];
+    const filename = item.mediaFile?.filename || `photo_${i + 1}.jpg`;
+    const baseUrl = item.mediaFile?.baseUrl;
+    const mimeType = item.mediaFile?.mimeType || 'image/jpeg';
+    const width = item.mediaFile?.mediaFileMetadata?.width ? Number(item.mediaFile.mediaFileMetadata.width) : 1920;
+    const height = item.mediaFile?.mediaFileMetadata?.height ? Number(item.mediaFile.mediaFileMetadata.height) : 1080;
+
+    if (onProgress) {
+      onProgress(i + 1, mediaItems.length, filename);
+    }
+
+    if (!baseUrl) continue;
+
+    try {
+      const downloadUrl = `${baseUrl}=w2048-h1536`;
+      const blob = await fetchPhotoBlob(downloadUrl, accessToken);
+
+      const cachedPhoto: CachedPhoto = {
+        id: item.id || `gphoto_${Date.now()}_${i}`,
+        albumId,
+        filename,
+        mimeType,
+        creationTime: item.createTime || new Date().toISOString(),
+        width,
+        height,
+        blob,
+        cachedAt: Date.now(),
+        sizeBytes: blob.size,
+      };
+
+      await db.savePhoto(cachedPhoto);
+      if (!firstCoverUrl) {
+        firstCoverUrl = baseUrl;
+      }
+    } catch (photoErr) {
+      console.warn('Failed to download picked photo:', filename, photoErr);
+    }
+  }
+
+  const cachedPhotos = await db.getPhotosByAlbum(albumId);
+  const newAlbum: Album = {
+    id: albumId,
+    title: albumTitle || `Google Photos (${new Date().toLocaleDateString()})`,
+    mediaItemsCount: cachedPhotos.length,
+    cachedCount: cachedPhotos.length,
+    lastSyncedAt: Date.now(),
+    coverPhotoBaseUrl: firstCoverUrl || undefined,
+    isPickerAlbum: true,
+  };
+
+  await db.saveAlbum(newAlbum);
+  return newAlbum;
+}
+
+// -------------------------------------------------------------
+// Offline Local Photos / Folder Import
+// -------------------------------------------------------------
+
+export async function importLocalPhotos(
+  files: FileList | File[],
+  albumTitle: string = 'My Uploaded Photos',
+  onProgress?: (current: number, total: number, filename: string) => void
+): Promise<Album> {
+  const fileArray = Array.from(files).filter((f) => f.type.startsWith('image/'));
+  if (fileArray.length === 0) {
+    throw new Error('No valid image files were selected.');
+  }
+
+  const albumId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  let firstCoverBlob: Blob | null = null;
+
+  for (let i = 0; i < fileArray.length; i++) {
+    const file = fileArray[i];
+    if (onProgress) {
+      onProgress(i + 1, fileArray.length, file.name);
+    }
+
+    const photoId = `photo_${albumId}_${i}_${Date.now()}`;
+    const blob = file.slice(0, file.size, file.type || 'image/jpeg');
+    if (!firstCoverBlob) firstCoverBlob = blob;
+
+    let width = 1920;
+    let height = 1080;
+    try {
+      const url = URL.createObjectURL(blob);
+      await new Promise<void>((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          width = img.naturalWidth;
+          height = img.naturalHeight;
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        img.src = url;
+      });
+    } catch {
+      // ignore
+    }
+
+    const cachedPhoto: CachedPhoto = {
+      id: photoId,
+      albumId,
+      filename: file.name,
+      mimeType: file.type || 'image/jpeg',
+      creationTime: new Date(file.lastModified || Date.now()).toISOString(),
+      width,
+      height,
+      blob,
+      cachedAt: Date.now(),
+      sizeBytes: file.size,
+    };
+
+    await db.savePhoto(cachedPhoto);
+  }
+
+  const newAlbum: Album = {
+    id: albumId,
+    title: albumTitle,
+    mediaItemsCount: fileArray.length,
+    cachedCount: fileArray.length,
+    lastSyncedAt: Date.now(),
+    isLocalAlbum: true,
+  };
+
+  await db.saveAlbum(newAlbum);
+  return newAlbum;
 }
 
 // Fetch media items inside an album

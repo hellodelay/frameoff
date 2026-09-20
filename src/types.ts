@@ -15,6 +15,8 @@ export interface Album {
   coverPhotoBaseUrl?: string;
   mediaItemsCount?: number | string;
   isSampleAlbum?: boolean;
+  isLocalAlbum?: boolean;
+  isPickerAlbum?: boolean;
   lastSyncedAt?: number;
   cachedCount?: number;
 }

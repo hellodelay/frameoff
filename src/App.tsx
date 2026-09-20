@@ -9,11 +9,17 @@ import * as db from './services/db';
 import { wakeLockService } from './services/wakeLock';
 import {
   clearAllAuthAndCredentials,
+  createPickerSession,
+  deletePickerSession,
   fetchGoogleAlbums,
   getCachedAuthUser,
   getEffectiveClientId,
+  getPickerSession,
+  importLocalPhotos,
+  importPickerPhotos,
   initGoogleTokenClient,
   isTokenValid,
+  listPickerMediaItems,
   requestLogin,
   saveCachedAuthUser,
   syncAlbumToCache,
@@ -64,6 +70,8 @@ export default function App() {
   const [controlsVisible, setControlsVisible] = useState<boolean>(false);
   const [showAlbumModal, setShowAlbumModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [isPickingGooglePhotos, setIsPickingGooglePhotos] = useState<boolean>(false);
+  const [albumFetchError, setAlbumFetchError] = useState<string | null>(null);
 
   // Refs for timers
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -315,19 +323,30 @@ export default function App() {
           setAuthUser(user);
           // Fetch user's albums
           try {
-            const fetchedAlbums = await fetchGoogleAlbums(user.accessToken);
-            if (fetchedAlbums.length > 0) {
+            const result = await fetchGoogleAlbums(user.accessToken);
+            if (result.albums.length > 0) {
+              setAlbumFetchError(null);
               // Merge with sample album
-              const merged = [SAMPLE_ALBUM, ...fetchedAlbums];
+              const merged = [SAMPLE_ALBUM, ...result.albums];
               setAlbums(merged);
-              for (const a of fetchedAlbums) {
+              for (const a of result.albums) {
                 await db.saveAlbum(a);
               }
               // Open album picker to let user choose their album
               setShowAlbumModal(true);
+            } else {
+              setAlbumFetchError(
+                result.error ||
+                  'Google now restricts third-party access to the full albums list. Please use the "Pick from Google Photos" button to select photos or albums directly.'
+              );
+              setShowAlbumModal(true);
             }
-          } catch (err) {
+          } catch (err: any) {
             console.warn('Failed to load Google Photos albums:', err);
+            setAlbumFetchError(
+              'Google Photos direct album listing is restricted by Google. Click "Pick from Google Photos" to select photos directly.'
+            );
+            setShowAlbumModal(true);
           }
         },
         (err) => {
@@ -340,6 +359,136 @@ export default function App() {
       }
     } catch (err: any) {
       alert(`Could not start Google Sign In: ${err.message}`);
+    }
+  };
+
+  // Google Photos Picker API Workflow
+  const handleStartGooglePicker = async () => {
+    const token = authUser?.accessToken;
+    if (!token) {
+      handleConnectGoogle(false);
+      return;
+    }
+
+    setIsPickingGooglePhotos(true);
+    try {
+      // 1. Create a Picker session
+      const session = await createPickerSession(token);
+      if (!session || !session.pickerUri) {
+        throw new Error('Unable to create Google Photos picker session.');
+      }
+
+      // 2. Open Picker in a popup
+      const pickerPopup = window.open(
+        session.pickerUri,
+        'GooglePhotosPicker',
+        'width=920,height=750,menubar=no,toolbar=no'
+      );
+
+      // 3. Poll picker session until user selects photos (mediaItemsSet === true)
+      let sessionFinished = false;
+      const startTime = Date.now();
+      const maxWaitMs = 15 * 60 * 1000; // 15 minutes timeout
+
+      while (!sessionFinished && Date.now() - startTime < maxWaitMs) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+
+        // Check if window was closed by user
+        if (pickerPopup && pickerPopup.closed) {
+          const finalCheck = await getPickerSession(session.id, token);
+          if (finalCheck.mediaItemsSet) {
+            sessionFinished = true;
+          }
+          break;
+        }
+
+        const pollStatus = await getPickerSession(session.id, token);
+        if (pollStatus.mediaItemsSet) {
+          sessionFinished = true;
+          if (pickerPopup && !pickerPopup.closed) {
+            pickerPopup.close();
+          }
+          break;
+        }
+      }
+
+      if (sessionFinished) {
+        // 4. Retrieve picked media items
+        const pickedItems = await listPickerMediaItems(session.id, token);
+        if (pickedItems.length > 0) {
+          setSyncState('syncing');
+          setSyncProgressText(`Importing ${pickedItems.length} photos from Google Photos...`);
+
+          const title = `Google Photos (${new Date().toLocaleDateString()})`;
+          const newAlbum = await importPickerPhotos(
+            pickedItems,
+            title,
+            token,
+            (curr: number, total: number) => {
+              setSyncProgressText(`Caching offline: ${curr}/${total} photos...`);
+            }
+          );
+
+          const importedPhotos = await db.getPhotosByAlbum(newAlbum.id);
+          // Update albums state & indexedDB
+          const allAlbums = await db.getAlbums();
+          setAlbums(allAlbums);
+          setCurrentAlbum(newAlbum);
+          setPhotos(importedPhotos);
+          setCurrentIndex(0);
+          refreshStorageStats();
+          setShowAlbumModal(false);
+          setCurrentView('frame');
+        } else {
+          alert('No photos were selected in Google Photos.');
+        }
+
+        // 5. Clean up session
+        try {
+          await deletePickerSession(session.id, token);
+        } catch {
+          // benign
+        }
+      }
+    } catch (err: any) {
+      console.error('Picker API error:', err);
+      alert(
+        `Google Photos Picker Notice: ${err.message || err}\n\nTip: You can also use the 'Upload Photos' button to import photos directly from your device into the offline frame.`
+      );
+    } finally {
+      setIsPickingGooglePhotos(false);
+      setSyncState('idle');
+      setSyncProgressText('');
+    }
+  };
+
+  // Local Photos Import (for direct offline use without Google dependencies)
+  const handleImportLocalPhotos = async (files: FileList | File[], customTitle?: string) => {
+    if (!files || files.length === 0) return;
+
+    setSyncState('syncing');
+    setSyncProgressText(`Importing ${files.length} local photos...`);
+    try {
+      const newAlbum = await importLocalPhotos(
+        files,
+        customTitle || `Device Photos (${new Date().toLocaleDateString()})`
+      );
+
+      const importedPhotos = await db.getPhotosByAlbum(newAlbum.id);
+      const allAlbums = await db.getAlbums();
+      setAlbums(allAlbums);
+      setCurrentAlbum(newAlbum);
+      setPhotos(importedPhotos);
+      setCurrentIndex(0);
+      refreshStorageStats();
+      setShowAlbumModal(false);
+      setCurrentView('frame');
+    } catch (err: any) {
+      console.error('Failed to import local photos:', err);
+      alert(`Could not import local photos: ${err.message || err}`);
+    } finally {
+      setSyncState('idle');
+      setSyncProgressText('');
     }
   };
 
@@ -492,14 +641,25 @@ export default function App() {
   const handleRefreshAlbums = async () => {
     if (!authUser) return;
     try {
-      const liveAlbums = await fetchGoogleAlbums(authUser.accessToken);
-      const merged = [SAMPLE_ALBUM, ...liveAlbums];
-      setAlbums(merged);
-      for (const a of liveAlbums) {
-        await db.saveAlbum(a);
+      const result = await fetchGoogleAlbums(authUser.accessToken);
+      if (result.albums.length > 0) {
+        setAlbumFetchError(null);
+        const merged = [SAMPLE_ALBUM, ...result.albums];
+        setAlbums(merged);
+        for (const a of result.albums) {
+          await db.saveAlbum(a);
+        }
+      } else {
+        setAlbumFetchError(
+          result.error ||
+            'Google returned 0 albums via the legacy API. Please use "Pick from Google Photos" to select photos directly.'
+        );
       }
     } catch (err) {
       console.warn('Error refreshing albums:', err);
+      setAlbumFetchError(
+        'Google Photos direct album listing is restricted by Google. Click "Pick from Google Photos" to select photos directly.'
+      );
     }
   };
 
@@ -538,6 +698,10 @@ export default function App() {
           onUpdateSettings={handleUpdateSettings}
           isOnline={isOnline}
           isWakeLockActive={isWakeLockActive}
+          onStartGooglePicker={handleStartGooglePicker}
+          onImportLocalPhotos={handleImportLocalPhotos}
+          albumFetchError={albumFetchError}
+          isPickingGooglePhotos={isPickingGooglePhotos}
         />
       ) : (
         <>
@@ -603,6 +767,10 @@ export default function App() {
         }}
         syncState={syncState}
         storageStats={storageStats}
+        onStartGooglePicker={handleStartGooglePicker}
+        onImportLocalPhotos={handleImportLocalPhotos}
+        albumFetchError={albumFetchError}
+        isPickingGooglePhotos={isPickingGooglePhotos}
       />
 
       {/* Settings Modal (Transitions, Speeds, Screen Wake Lock, Anyone Auth Setup) */}
