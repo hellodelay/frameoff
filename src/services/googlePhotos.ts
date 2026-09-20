@@ -897,6 +897,114 @@ export async function importPickerPhotos(
 }
 
 // -------------------------------------------------------------
+// Shared Google Photos Album Link Import (photos.app.goo.gl / photos.google.com/share)
+// -------------------------------------------------------------
+
+export interface SharedAlbumInfo {
+  success: boolean;
+  title: string;
+  coverPhotoBaseUrl?: string;
+  count: number;
+  photos: Array<{ id: string; baseUrl: string; filename: string }>;
+  canonicalUrl: string;
+}
+
+export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo> {
+  const res = await fetch('/api/fetch-shared-album', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+
+  if (!res.ok) {
+    let msg = `Server error (${res.status})`;
+    try {
+      const err = await res.json();
+      msg = err.error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+
+  const data: SharedAlbumInfo = await res.json();
+  return data;
+}
+
+export async function importSharedLinkAlbum(
+  sharedUrl: string,
+  onProgress?: (curr: number, total: number, filename: string) => void,
+  existingAlbumId?: string
+): Promise<{ album: Album; addedCount: number }> {
+  const info = await fetchSharedAlbumInfo(sharedUrl);
+  if (!info.photos || info.photos.length === 0) {
+    throw new Error('No photos were found in this shared album link.');
+  }
+
+  const isExisting = !!existingAlbumId;
+  const albumId = existingAlbumId || `shared_link_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const existingPhotos = isExisting ? await db.getPhotosByAlbum(albumId) : [];
+  const existingIdSet = new Set(existingPhotos.map((p) => p.id));
+  const existingUrlSet = new Set(existingPhotos.map((p) => p.description || ''));
+
+  let addedCount = 0;
+  let firstCoverUrl = info.coverPhotoBaseUrl || '';
+
+  for (let i = 0; i < info.photos.length; i++) {
+    const item = info.photos[i];
+    if (existingIdSet.has(item.id) || existingUrlSet.has(item.baseUrl)) {
+      continue;
+    }
+
+    if (onProgress) {
+      onProgress(i + 1, info.photos.length, item.filename);
+    }
+
+    try {
+      // Fetch high quality photo via proxy
+      const downloadUrl = `${item.baseUrl}=w2048-h1536`;
+      const blob = await fetchPhotoBlob(downloadUrl);
+
+      if (!firstCoverUrl) firstCoverUrl = item.baseUrl;
+
+      const cachedPhoto: CachedPhoto = {
+        id: item.id,
+        albumId,
+        filename: item.filename,
+        mimeType: 'image/jpeg',
+        description: item.baseUrl,
+        creationTime: new Date().toISOString(),
+        width: 1920,
+        height: 1080,
+        blob,
+        cachedAt: Date.now(),
+        sizeBytes: blob.size,
+      };
+
+      await db.savePhoto(cachedPhoto);
+      addedCount++;
+    } catch (err) {
+      console.warn(`[Shared Link] Could not download photo ${i + 1}:`, err);
+    }
+  }
+
+  const cachedPhotos = await db.getPhotosByAlbum(albumId);
+  const existingAlbum = isExisting ? await db.getAlbum(albumId) : null;
+
+  const finalAlbum: Album = {
+    id: albumId,
+    title: existingAlbum?.title || info.title || 'Shared Google Photos Album',
+    mediaItemsCount: cachedPhotos.length,
+    cachedCount: cachedPhotos.length,
+    lastSyncedAt: Date.now(),
+    coverPhotoBaseUrl: firstCoverUrl || existingAlbum?.coverPhotoBaseUrl || undefined,
+    isSharedLinkAlbum: true,
+    sharedAlbumUrl: sharedUrl,
+  };
+
+  await db.saveAlbum(finalAlbum);
+  return { album: finalAlbum, addedCount };
+}
+
+// -------------------------------------------------------------
 // Offline Local Photos / Folder Import
 // -------------------------------------------------------------
 
@@ -1083,6 +1191,19 @@ export async function syncAlbumToCache(
   if (album.isLocalAlbum) {
     const existing = await db.getPhotosByAlbum(album.id);
     return { added: 0, removed: 0, total: existing.length };
+  }
+
+  // Handle shared link album
+  if (album.isSharedLinkAlbum && album.sharedAlbumUrl) {
+    try {
+      const { addedCount } = await importSharedLinkAlbum(album.sharedAlbumUrl, onProgress, album.id);
+      const allPhotos = await db.getPhotosByAlbum(album.id);
+      return { added: addedCount, removed: 0, total: allPhotos.length };
+    } catch (err: any) {
+      console.warn('Failed to sync shared link album:', err);
+      const existing = await db.getPhotosByAlbum(album.id);
+      return { added: 0, removed: 0, total: existing.length };
+    }
   }
 
   // Google Photos real album sync

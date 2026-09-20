@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Info,
   Plus,
+  Share2,
 } from 'lucide-react';
 import { Album, AuthUser, FrameSettings } from '../types';
 import { getEffectiveClientId, saveCustomClientId, sanitizeClientId } from '../services/googlePhotos';
@@ -48,6 +49,7 @@ interface HomePageProps {
   isOnline: boolean;
   isWakeLockActive: boolean;
   onStartGooglePicker?: () => Promise<void>;
+  onOpenSharedAlbumModal?: () => void;
   onAddPhotosToAlbum?: (album: Album) => Promise<void>;
   onSyncAlbum?: (album: Album) => Promise<void>;
   onImportLocalPhotos?: (files: FileList | File[], title?: string) => Promise<void>;
@@ -72,6 +74,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   isOnline,
   isWakeLockActive,
   onStartGooglePicker,
+  onOpenSharedAlbumModal,
   onAddPhotosToAlbum,
   onSyncAlbum,
   onImportLocalPhotos,
@@ -359,6 +362,18 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <span>Choose Albums</span>
                 </button>
 
+                {onOpenSharedAlbumModal && (
+                  <button
+                    id="btn-import-shared-album-home"
+                    onClick={onOpenSharedAlbumModal}
+                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-purple-300 hover:text-white font-medium text-sm border border-purple-500/30 transition-colors"
+                    title="Import photos from a shared Google Photos album link"
+                  >
+                    <Share2 className="w-4 h-4 text-purple-400" />
+                    <span>Import Shared Album</span>
+                  </button>
+                )}
+
                 <button
                   id="btn-upload-local-photos-home"
                   onClick={() => fileInputRef.current?.click()}
@@ -386,6 +401,36 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <LogOut className="w-4 h-4" />
                   <span>Sign Out</span>
                 </button>
+              </div>
+
+              {/* Shared Album Clarification Callout */}
+              <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-500/30 flex items-start gap-3 text-xs text-purple-200">
+                <Share2 className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-purple-200">Shared Album from Family or Friends?</span>
+                    {onOpenSharedAlbumModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenSharedAlbumModal}
+                        className="text-amber-400 hover:text-amber-300 font-medium underline text-[11px] inline-flex items-center gap-1"
+                      >
+                        Paste Album Link &rarr;
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-zinc-300 leading-relaxed text-[11.5px]">
+                    Google&apos;s Photo Picker only displays photos in your personal library. To import a shared album, click{' '}
+                    <button
+                      type="button"
+                      onClick={onOpenSharedAlbumModal}
+                      className="text-purple-300 underline font-medium hover:text-white"
+                    >
+                      Import Shared Album
+                    </button>{' '}
+                    to paste its link, or open Google Photos and click <strong>&quot;Save photos&quot;</strong> in the shared album so they appear in Google&apos;s Picker.
+                  </p>
+                </div>
               </div>
 
               {/* Tip for picking albums */}
@@ -473,6 +518,37 @@ export const HomePage: React.FC<HomePageProps> = ({
                     <Upload className="w-4 h-4 text-emerald-400" />
                     Upload Device Photos
                   </button>
+
+                  {onOpenSharedAlbumModal && (
+                    <button
+                      id="btn-import-shared-album-guest"
+                      onClick={onOpenSharedAlbumModal}
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-purple-300 hover:text-white font-medium text-sm border border-purple-500/30 transition-colors"
+                      title="Import photos from a shared album link without needing a Google sign-in"
+                    >
+                      <Share2 className="w-4 h-4 text-purple-400" />
+                      <span>Import Shared Album</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Guest Shared Album Callout */}
+              <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-500/30 flex items-start gap-3 text-xs text-purple-200">
+                <Share2 className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <span className="font-semibold text-purple-200">Have a Shared Google Photos Link?</span>
+                  <p className="text-zinc-300 leading-relaxed text-[11.5px]">
+                    You don&apos;t even need to sign in! Click{' '}
+                    <button
+                      type="button"
+                      onClick={onOpenSharedAlbumModal}
+                      className="text-amber-400 hover:underline font-medium"
+                    >
+                      Import Shared Album
+                    </button>{' '}
+                    to paste any public or shared Google Photos album link (<code className="text-purple-300 bg-zinc-900 px-1 py-0.5 rounded">photos.app.goo.gl/...</code>).
+                  </p>
                 </div>
               </div>
             </div>

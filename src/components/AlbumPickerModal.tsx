@@ -16,6 +16,7 @@ import {
   Info,
   Pencil,
   Plus,
+  Share2,
 } from 'lucide-react';
 import { Album, AuthUser, SyncState } from '../types';
 
@@ -33,6 +34,7 @@ interface AlbumPickerModalProps {
   syncState: SyncState;
   storageStats: { totalCount: number; totalBytes: number };
   onStartGooglePicker?: () => Promise<void>;
+  onOpenSharedAlbumModal?: () => void;
   onAddPhotosToAlbum?: (album: Album) => Promise<void>;
   onImportLocalPhotos?: (files: FileList | File[], title?: string) => Promise<void>;
   onRenameAlbum?: (albumId: string, newTitle: string) => Promise<void>;
@@ -54,6 +56,7 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
   syncState,
   storageStats,
   onStartGooglePicker,
+  onOpenSharedAlbumModal,
   onAddPhotosToAlbum,
   onImportLocalPhotos,
   onRenameAlbum,
@@ -163,19 +166,19 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
           </div>
         </div>
 
-        {/* Action Buttons: Pick from Google Photos & Upload Local */}
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {/* Action Buttons: Pick from Google Photos, Import Shared Album & Upload Local */}
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           {authUser ? (
             <button
               id="btn-modal-pick-google-photos"
               onClick={onStartGooglePicker}
               disabled={isPickingGooglePhotos}
-              className="flex items-center justify-center gap-2.5 px-4 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-semibold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60"
+              className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-semibold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60"
             >
               {isPickingGooglePhotos ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin text-zinc-950" />
-                  <span>Waiting for Google Picker...</span>
+                  <span>Waiting for Picker...</span>
                 </>
               ) : (
                 <>
@@ -189,7 +192,7 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
                       d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
                     />
                   </svg>
-                  <span>Pick Photos from Google</span>
+                  <span>Pick from Google</span>
                 </>
               )}
             </button>
@@ -197,27 +200,39 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
             <button
               id="btn-modal-connect-google"
               onClick={onConnectGoogle}
-              className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-white font-medium text-xs sm:text-sm border border-zinc-700 transition-colors"
+              className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-white font-medium text-xs sm:text-sm border border-zinc-700 transition-colors"
             >
               <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>Connect Google Account</span>
+              <span>Connect Google</span>
+            </button>
+          )}
+
+          {onOpenSharedAlbumModal && (
+            <button
+              id="btn-modal-import-shared-album"
+              onClick={onOpenSharedAlbumModal}
+              className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-purple-300 hover:text-white font-medium text-xs sm:text-sm border border-purple-500/30 transition-colors"
+              title="Import photos from a shared album link (e.g. photos.app.goo.gl/...)"
+            >
+              <Share2 className="w-4 h-4 text-purple-400" />
+              <span>Import Shared Album</span>
             </button>
           )}
 
           <button
             id="btn-modal-upload-local-photos"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 hover:text-white font-medium text-xs sm:text-sm border border-zinc-700/80 transition-colors"
+            className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 hover:text-white font-medium text-xs sm:text-sm border border-zinc-700/80 transition-colors"
           >
             <Upload className="w-4 h-4 text-emerald-400" />
-            <span>Upload Device Photos / Folder</span>
+            <span>Upload Device Photos</span>
           </button>
         </div>
 
         {/* Guidance on selecting photos & albums with Google Photos Picker */}
         <div className="mt-3 p-3.5 rounded-2xl bg-zinc-800/50 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-3">
           <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-1">
+          <div className="space-y-1 flex-1">
             <p className="font-semibold text-zinc-100 flex items-center gap-1.5">
               <span>How Google's Photo Picker Works:</span>
             </p>
@@ -230,12 +245,50 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
                 <strong className="text-zinc-200">Find an Album:</strong> Type your album's title into the top search bar to show its photos.
               </li>
               <li>
-                <strong className="text-zinc-200">Select Photos:</strong> Click the circle on any photo, or click the checkmark next to a date header (e.g. "Thu, Sep 17") to select the whole group.
+                <strong className="text-zinc-200">Select Photos:</strong> Click the circle on any photo, or click the checkmark next to a date header to select the whole group.
               </li>
               <li>
-                <strong className="text-zinc-200">Import:</strong> Click the <strong className="text-blue-400">"Done"</strong> button in the top-right corner. Pictorial will automatically create a dedicated album and cache all photos locally for offline slideshow playback.
+                <strong className="text-zinc-200">Import:</strong> Click <strong className="text-blue-400">"Done"</strong> in the top right to download and cache photos for continuous offline playback.
               </li>
             </ul>
+          </div>
+        </div>
+
+        {/* Shared Album Clarification & Solution Box */}
+        <div className="mt-2.5 p-3.5 rounded-2xl bg-purple-950/20 border border-purple-500/30 text-xs text-purple-200 flex items-start gap-3">
+          <Share2 className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+          <div className="space-y-1 flex-1">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-purple-200">Looking for a Shared Album?</span>
+              {onOpenSharedAlbumModal && (
+                <button
+                  type="button"
+                  onClick={onOpenSharedAlbumModal}
+                  className="text-amber-400 hover:text-amber-300 font-medium underline text-[11px] inline-flex items-center gap-1"
+                >
+                  Paste Shared Link &rarr;
+                </button>
+              )}
+            </div>
+            <p className="text-zinc-300 leading-relaxed text-[11.5px]">
+              Google's official Photo Picker hides albums from the &quot;Sharing&quot; tab unless their photos are saved to your personal library.
+            </p>
+            <div className="text-[11px] text-zinc-400 space-y-1 pt-0.5">
+              <p>
+                &bull; <strong className="text-zinc-200">Option 1 (Easiest):</strong> Click{' '}
+                <button
+                  type="button"
+                  onClick={onOpenSharedAlbumModal}
+                  className="text-purple-300 underline font-medium hover:text-white"
+                >
+                  Import Shared Album
+                </button>{' '}
+                to paste your <code className="text-purple-300 bg-zinc-900 px-1 py-0.5 rounded">photos.app.goo.gl</code> link and import all photos in one click.
+              </p>
+              <p>
+                &bull; <strong className="text-zinc-200">Option 2 (In Google Photos):</strong> Open the shared album in Google Photos and tap <strong>&quot;Save photos&quot;</strong> (cloud icon with arrow). The photos will then immediately appear in Google's Photo Picker!
+              </p>
+            </div>
           </div>
         </div>
 
@@ -332,6 +385,11 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
                       {album.isLocalAlbum && (
                         <span className="absolute bottom-1 right-1 bg-emerald-500 text-zinc-950 font-bold text-[9px] px-1 rounded">
                           LOCAL
+                        </span>
+                      )}
+                      {album.isSharedLinkAlbum && (
+                        <span className="absolute bottom-1 right-1 bg-purple-500 text-white font-bold text-[9px] px-1 rounded">
+                          SHARED
                         </span>
                       )}
                     </div>

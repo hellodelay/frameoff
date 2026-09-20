@@ -4,6 +4,7 @@ import { ControlsOverlay } from './components/ControlsOverlay';
 import { AlbumPickerModal } from './components/AlbumPickerModal';
 import { SettingsModal } from './components/SettingsModal';
 import { HomePage } from './components/HomePage';
+import { SharedAlbumModal } from './components/SharedAlbumModal';
 import { Album, AuthUser, CachedPhoto, FrameSettings, SyncState } from './types';
 import * as db from './services/db';
 import { wakeLockService } from './services/wakeLock';
@@ -19,6 +20,7 @@ import {
   hasPickerScope,
   importLocalPhotos,
   importPickerPhotos,
+  importSharedLinkAlbum,
   initGoogleTokenClient,
   isTokenValid,
   listPickerMediaItems,
@@ -76,6 +78,9 @@ export default function App() {
   const [controlsVisible, setControlsVisible] = useState<boolean>(false);
   const [showAlbumModal, setShowAlbumModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [showSharedAlbumModal, setShowSharedAlbumModal] = useState<boolean>(false);
+  const [isImportingSharedAlbum, setIsImportingSharedAlbum] = useState<boolean>(false);
+  const [sharedImportProgressText, setSharedImportProgressText] = useState<string>('');
   const [isPickingGooglePhotos, setIsPickingGooglePhotos] = useState<boolean>(false);
   const [albumFetchError, setAlbumFetchError] = useState<string | null>(null);
 
@@ -623,6 +628,41 @@ export default function App() {
     }
   };
 
+  // Shared Link Album Import (photos.app.goo.gl or photos.google.com/share)
+  const handleImportSharedAlbum = async (url: string) => {
+    setIsImportingSharedAlbum(true);
+    setSharedImportProgressText('Connecting to Google Photos shared album...');
+    setSyncState('syncing');
+    setSyncProgressText('Importing shared album photos...');
+
+    try {
+      const { album, addedCount } = await importSharedLinkAlbum(url, (curr, total, filename) => {
+        setSharedImportProgressText(`Downloading photo ${curr} of ${total} (${filename})...`);
+        setSyncProgressText(`Caching photos: ${curr}/${total}`);
+      });
+
+      const importedPhotos = await db.getPhotosByAlbum(album.id);
+      const allAlbums = await db.getAlbums();
+      setAlbums(allAlbums);
+      setCurrentAlbum(album);
+      setPhotos(importedPhotos);
+      setCurrentIndex(0);
+      setTimeRemainingSeconds(settings.transitionSpeed);
+      refreshStorageStats();
+      setShowSharedAlbumModal(false);
+      setShowAlbumModal(false);
+      setCurrentView('frame');
+    } catch (err: any) {
+      console.error('Failed to import shared album:', err);
+      throw err;
+    } finally {
+      setIsImportingSharedAlbum(false);
+      setSharedImportProgressText('');
+      setSyncState('idle');
+      setSyncProgressText('');
+    }
+  };
+
   const handleReturnToFrame = async () => {
     // If photos are already loaded in memory, return directly to frame
     if (photos.length > 0) {
@@ -714,8 +754,8 @@ export default function App() {
     try {
       let token = authUser?.accessToken;
 
-      // Check if token is expired and refresh silently if possible
-      if (!album.isSampleAlbum && (!authUser || !isTokenValid(authUser))) {
+      // Check if token is expired and refresh silently if possible (only for Google Photos API albums)
+      if (!album.isSampleAlbum && !album.isSharedLinkAlbum && !album.isLocalAlbum && (!authUser || !isTokenValid(authUser))) {
         const effectiveClientId = settings.googleClientId || getEffectiveClientId();
         if (effectiveClientId) {
           try {
@@ -857,6 +897,7 @@ export default function App() {
           isOnline={isOnline}
           isWakeLockActive={isWakeLockActive}
           onStartGooglePicker={() => handleStartGooglePicker()}
+          onOpenSharedAlbumModal={() => setShowSharedAlbumModal(true)}
           onAddPhotosToAlbum={(album) => handleStartGooglePicker(album)}
           onSyncAlbum={handleSyncAlbum}
           onImportLocalPhotos={handleImportLocalPhotos}
@@ -929,11 +970,24 @@ export default function App() {
         syncState={syncState}
         storageStats={storageStats}
         onStartGooglePicker={() => handleStartGooglePicker()}
+        onOpenSharedAlbumModal={() => {
+          setShowAlbumModal(false);
+          setShowSharedAlbumModal(true);
+        }}
         onAddPhotosToAlbum={(album) => handleStartGooglePicker(album)}
         onImportLocalPhotos={handleImportLocalPhotos}
         onRenameAlbum={handleRenameAlbum}
         albumFetchError={albumFetchError}
         isPickingGooglePhotos={isPickingGooglePhotos}
+      />
+
+      {/* Shared Album Link Import Modal */}
+      <SharedAlbumModal
+        isOpen={showSharedAlbumModal}
+        onClose={() => setShowSharedAlbumModal(false)}
+        onImportSharedAlbum={handleImportSharedAlbum}
+        isImporting={isImportingSharedAlbum}
+        importProgressText={sharedImportProgressText}
       />
 
       {/* Settings Modal (Transitions, Speeds, Screen Wake Lock, Anyone Auth Setup) */}

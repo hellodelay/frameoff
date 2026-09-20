@@ -88,6 +88,121 @@ async function startServer() {
     }
   });
 
+  // Google Photos Shared Album link resolver & photo extractor
+  app.post('/api/fetch-shared-album', async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url || typeof url !== 'string') {
+        return res.status(400).json({ error: 'Missing or invalid shared album url' });
+      }
+
+      const trimmedUrl = url.trim();
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(trimmedUrl);
+      } catch {
+        return res.status(400).json({ error: 'Invalid URL format. Please provide a valid Google Photos shared album link.' });
+      }
+
+      const host = parsedUrl.hostname.toLowerCase();
+      if (!host.includes('photos.app.goo.gl') && !host.includes('photos.google.com')) {
+        return res.status(400).json({
+          error: 'Please enter a valid Google Photos shared link (e.g. https://photos.app.goo.gl/... or https://photos.google.com/share/...)',
+        });
+      }
+
+      // Fetch the page, following redirects to get full album HTML
+      const response = await fetch(trimmedUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        redirect: 'follow',
+      });
+
+      if (!response.ok) {
+        return res.status(response.status).json({
+          error: `Failed to load album (${response.status} ${response.statusText}). Check that the link is accessible.`,
+        });
+      }
+
+      const html = await response.text();
+
+      // Extract album title
+      let title = 'Shared Google Photos Album';
+      const ogTitleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+      const titleTagMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (ogTitleMatch && ogTitleMatch[1]) {
+        title = ogTitleMatch[1].replace(/ - Google Photos$/, '').trim();
+      } else if (titleTagMatch && titleTagMatch[1]) {
+        title = titleTagMatch[1].replace(/ - Google Photos$/, '').trim();
+      }
+
+      // Extract cover image
+      let coverPhotoBaseUrl: string | undefined = undefined;
+      const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+      if (ogImageMatch && ogImageMatch[1]) {
+        coverPhotoBaseUrl = ogImageMatch[1];
+      }
+
+      // Extract photo base URLs
+      const photoUrls = new Set<string>();
+
+      // 1. Primary pattern: modern Google Photos shared albums use lh3.googleusercontent.com/pw/...
+      const pwRegex = /https:\/\/lh3\.googleusercontent\.com\/pw\/([a-zA-Z0-9_\-]+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = pwRegex.exec(html)) !== null) {
+        const baseId = match[1].split('=')[0];
+        if (baseId.length >= 20) {
+          photoUrls.add(`https://lh3.googleusercontent.com/pw/${baseId}`);
+        }
+      }
+
+      // 2. Secondary pattern: generic lh3 images without /a/ (avatar) or /ogw/
+      const generalRegex = /https:\/\/lh3\.googleusercontent\.com\/([a-zA-Z0-9_\-]{40,})/g;
+      while ((match = generalRegex.exec(html)) !== null) {
+        const rawId = match[1].split('=')[0];
+        if (!rawId.startsWith('a/') && !rawId.startsWith('ogw/') && !rawId.startsWith('pw/')) {
+          photoUrls.add(`https://lh3.googleusercontent.com/${rawId}`);
+        }
+      }
+
+      const extractedUrls = Array.from(photoUrls);
+
+      if (extractedUrls.length === 0) {
+        return res.status(404).json({
+          error:
+            'No photos could be found at this link. Please ensure the link is a valid Google Photos shared album with link sharing enabled.',
+        });
+      }
+
+      if (!coverPhotoBaseUrl && extractedUrls.length > 0) {
+        coverPhotoBaseUrl = extractedUrls[0];
+      }
+
+      const photos = extractedUrls.map((url, idx) => ({
+        id: `shared_${idx}_${url.slice(-16).replace(/[^a-zA-Z0-9]/g, '')}`,
+        baseUrl: url,
+        filename: `${title.replace(/[^a-zA-Z0-9-_ ]/g, '') || 'photo'}_${idx + 1}.jpg`,
+      }));
+
+      return res.json({
+        success: true,
+        title,
+        coverPhotoBaseUrl,
+        count: photos.length,
+        photos,
+        canonicalUrl: response.url || trimmedUrl,
+      });
+    } catch (err: any) {
+      console.error('[Fetch Shared Album] Error:', err);
+      res.status(500).json({ error: 'Failed to process shared album link', details: err?.message });
+    }
+  });
+
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
