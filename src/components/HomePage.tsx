@@ -25,6 +25,7 @@ import {
   ChevronUp,
   Upload,
   RefreshCw,
+  Info,
 } from 'lucide-react';
 import { Album, AuthUser, FrameSettings } from '../types';
 import { getEffectiveClientId, saveCustomClientId, sanitizeClientId } from '../services/googlePhotos';
@@ -343,6 +344,14 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <LogOut className="w-4 h-4" />
                   Sign Out
                 </button>
+              </div>
+
+              {/* Tip for picking albums */}
+              <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 flex items-start gap-2.5 text-xs text-zinc-400">
+                <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <p>
+                  <strong className="text-zinc-200">Importing an album from Google:</strong> Click <strong className="text-amber-400">"Pick from Google Photos"</strong>, select the <strong className="text-zinc-200">"Albums"</strong> tab in the Google window, open any album, and select the photos you want to show. Pictorial will download and cache them for 100% offline playback.
+                </p>
               </div>
 
               {/* Diagnostic Banner if Google Photos API returned 403 or disabled */}

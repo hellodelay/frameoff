@@ -13,6 +13,7 @@ import {
   AlertCircle,
   Upload,
   Image as ImageIcon,
+  Info,
 } from 'lucide-react';
 import { Album, AuthUser, SyncState } from '../types';
 
@@ -203,6 +204,19 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
             <Upload className="w-4 h-4 text-emerald-400" />
             <span>Upload Device Photos / Folder</span>
           </button>
+        </div>
+
+        {/* Guidance on selecting photos & albums */}
+        <div className="mt-3 p-3 rounded-2xl bg-zinc-800/40 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-2.5">
+          <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-medium text-zinc-200">
+              How to import an Album from Google Photos:
+            </p>
+            <p className="text-zinc-400 leading-relaxed text-[11px]">
+              When the Google Photos window opens, navigate to the <strong>Albums</strong> tab, open your album, select the photos you want in your frame, and click <strong>Done</strong>. Google requires picking the media items inside an album, and Pictorial will automatically create a dedicated album and download them for 100% offline playback.
+            </p>
+          </div>
         </div>
 
         {/* Diagnostic Banner if Google Photos API returned an issue or 403 */}

@@ -424,13 +424,19 @@ export default function App() {
       const maxWaitMs = 15 * 60 * 1000; // 15 minutes timeout
 
       while (!sessionFinished && Date.now() - startTime < maxWaitMs) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
 
         // Check if window was closed by user
         if (pickerPopup && pickerPopup.closed) {
-          const finalCheck = await getPickerSession(session.id, token);
-          if (finalCheck.mediaItemsSet) {
-            sessionFinished = true;
+          // Poll up to 6 times (9 seconds total) to allow Google's servers to register the user's "Done" confirmation
+          setSyncProgressText('Finalizing photo selection with Google...');
+          for (let retry = 0; retry < 6; retry++) {
+            const finalCheck = await getPickerSession(session.id, token);
+            if (finalCheck.mediaItemsSet) {
+              sessionFinished = true;
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 1500));
           }
           break;
         }
@@ -445,43 +451,55 @@ export default function App() {
         }
       }
 
-      if (sessionFinished) {
-        // 5. Retrieve picked media items
-        const pickedItems = await listPickerMediaItems(session.id, token);
-        if (pickedItems.length > 0) {
-          setSyncState('syncing');
-          setSyncProgressText(`Importing ${pickedItems.length} photos from Google Photos...`);
+      if (!sessionFinished) {
+        setSyncState('idle');
+        setSyncProgressText('');
+        alert(
+          'Photo Selection Incomplete:\n\nNo photos were confirmed in Google Photos. When using the Google Photos Picker, select your desired photos and click "Done" in the Google window before closing it.'
+        );
+        return;
+      }
 
-          const title = `Google Photos (${new Date().toLocaleDateString()})`;
-          const newAlbum = await importPickerPhotos(
-            pickedItems,
-            title,
-            token,
-            (curr: number, total: number) => {
-              setSyncProgressText(`Caching offline: ${curr}/${total} photos...`);
-            }
-          );
+      // 5. Retrieve picked media items
+      setSyncState('syncing');
+      setSyncProgressText('Retrieving selected photos from Google Photos...');
+      const pickedItems = await listPickerMediaItems(session.id, token);
+      console.log(`[Google Photos Picker] Retrieved ${pickedItems.length} media items`);
 
-          const importedPhotos = await db.getPhotosByAlbum(newAlbum.id);
-          // Update albums state & indexedDB
-          const allAlbums = await db.getAlbums();
-          setAlbums(allAlbums);
-          setCurrentAlbum(newAlbum);
-          setPhotos(importedPhotos);
-          setCurrentIndex(0);
-          refreshStorageStats();
-          setShowAlbumModal(false);
-          setCurrentView('frame');
-        } else {
-          alert('No photos were selected in Google Photos.');
-        }
+      if (pickedItems.length > 0) {
+        setSyncProgressText(`Importing ${pickedItems.length} photos from Google Photos...`);
 
-        // 6. Clean up session
-        try {
-          await deletePickerSession(session.id, token);
-        } catch {
-          // benign
-        }
+        const title = `Google Photos (${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })})`;
+        const newAlbum = await importPickerPhotos(
+          pickedItems,
+          title,
+          token,
+          (curr: number, total: number, name: string) => {
+            setSyncProgressText(`Caching offline: ${curr}/${total} photos (${name})...`);
+          }
+        );
+
+        const importedPhotos = await db.getPhotosByAlbum(newAlbum.id);
+        console.log(`[Google Photos Picker] Successfully cached ${importedPhotos.length} photos in album ${newAlbum.id}`);
+
+        // Update albums state & indexedDB
+        const allAlbums = await db.getAlbums();
+        setAlbums(allAlbums);
+        setCurrentAlbum(newAlbum);
+        setPhotos(importedPhotos);
+        setCurrentIndex(0);
+        refreshStorageStats();
+        setShowAlbumModal(false);
+        setCurrentView('frame');
+      } else {
+        alert('Google reported 0 photos selected. Please try picking photos again and ensure you click Done.');
+      }
+
+      // 6. Clean up session
+      try {
+        await deletePickerSession(session.id, token);
+      } catch {
+        // benign
       }
     } catch (err: any) {
       console.error('Picker API error:', err);

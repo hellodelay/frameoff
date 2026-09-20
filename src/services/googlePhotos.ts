@@ -310,7 +310,23 @@ export async function fetchPhotoBlob(imageUrl: string, accessToken?: string): Pr
     headers['Authorization'] = `Bearer ${accessToken}`;
   }
 
-  // 1. Try direct fetch
+  // 1. If accessToken is provided or domain is Google, try proxy endpoint first
+  // (Browser cross-origin fetch with custom Authorization header fails on Google CDNs due to CORS)
+  if (accessToken || imageUrl.includes('google')) {
+    try {
+      const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
+      const proxyRes = await fetch(proxyUrl, {
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+      });
+      if (proxyRes.ok) {
+        return await proxyRes.blob();
+      }
+    } catch {
+      // Fall through to direct fetch
+    }
+  }
+
+  // 2. Try direct fetch
   try {
     const res = await fetch(imageUrl, {
       headers: Object.keys(headers).length > 0 ? headers : undefined,
@@ -319,23 +335,25 @@ export async function fetchPhotoBlob(imageUrl: string, accessToken?: string): Pr
       return await res.blob();
     }
   } catch (directErr) {
-    // Expected on strict CORS, fallback to proxy
+    // Expected on strict CORS, fallback to proxy if not tried yet
   }
 
-  // 2. Try proxy endpoint (dev server / custom backend)
-  try {
-    const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
-    const proxyRes = await fetch(proxyUrl, {
-      headers: Object.keys(headers).length > 0 ? headers : undefined,
-    });
-    if (proxyRes.ok) {
-      return await proxyRes.blob();
+  // 3. Try proxy endpoint if not tried yet
+  if (!accessToken && !imageUrl.includes('google')) {
+    try {
+      const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
+      const proxyRes = await fetch(proxyUrl, {
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+      });
+      if (proxyRes.ok) {
+        return await proxyRes.blob();
+      }
+    } catch {
+      // Proxy unavailable (e.g. static hosting like GitHub Pages)
     }
-  } catch {
-    // Proxy unavailable (e.g. static hosting like GitHub Pages)
   }
 
-  // 3. Fallback: load image object and draw onto an offscreen canvas
+  // 4. Fallback: load image object and draw onto an offscreen canvas (only works for public images)
   return new Promise<Blob>((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -531,19 +549,35 @@ export async function getPickerSession(sessionId: string, accessToken: string): 
 }
 
 export async function listPickerMediaItems(sessionId: string, accessToken: string): Promise<any[]> {
-  const res = await fetch(`https://photospicker.googleapis.com/v1/mediaItems?sessionId=${sessionId}&pageSize=100`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+  const allItems: any[] = [];
+  let pageToken: string | undefined = undefined;
 
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('TOKEN_EXPIRED');
-    throw new Error(`Failed to retrieve picked photos: ${res.statusText}`);
-  }
+  do {
+    let url = `https://photospicker.googleapis.com/v1/mediaItems?sessionId=${sessionId}&pageSize=100`;
+    if (pageToken) {
+      url += `&pageToken=${encodeURIComponent(pageToken)}`;
+    }
 
-  const data = await res.json();
-  return data.mediaItems || [];
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) throw new Error('TOKEN_EXPIRED');
+      const errText = await res.text().catch(() => '');
+      console.warn(`[Picker] listPickerMediaItems error ${res.status}:`, errText);
+      throw new Error(`Failed to retrieve picked photos (${res.status}): ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    const items = data.mediaItems || data.items || data.pickedMediaItems || [];
+    allItems.push(...items);
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  return allItems;
 }
 
 export async function deletePickerSession(sessionId: string, accessToken: string): Promise<void> {
@@ -574,45 +608,75 @@ export async function importPickerPhotos(
 
   for (let i = 0; i < mediaItems.length; i++) {
     const item = mediaItems[i];
-    const filename = item.mediaFile?.filename || `photo_${i + 1}.jpg`;
-    const baseUrl = item.mediaFile?.baseUrl;
-    const mimeType = item.mediaFile?.mimeType || 'image/jpeg';
-    const width = item.mediaFile?.mediaFileMetadata?.width ? Number(item.mediaFile.mediaFileMetadata.width) : 1920;
-    const height = item.mediaFile?.mediaFileMetadata?.height ? Number(item.mediaFile.mediaFileMetadata.height) : 1080;
+    const filename = item.mediaFile?.filename || item.filename || `photo_${i + 1}.jpg`;
+    const baseUrl = item.mediaFile?.baseUrl || item.baseUrl;
+    const mimeType = item.mediaFile?.mimeType || item.mimeType || 'image/jpeg';
+    const width = item.mediaFile?.mediaFileMetadata?.width 
+      ? Number(item.mediaFile.mediaFileMetadata.width) 
+      : (item.mediaMetadata?.width ? Number(item.mediaMetadata.width) : 1920);
+    const height = item.mediaFile?.mediaFileMetadata?.height 
+      ? Number(item.mediaFile.mediaFileMetadata.height) 
+      : (item.mediaMetadata?.height ? Number(item.mediaMetadata.height) : 1080);
 
     if (onProgress) {
       onProgress(i + 1, mediaItems.length, filename);
     }
 
-    if (!baseUrl) continue;
+    if (!baseUrl) {
+      console.warn('[Picker] Item missing baseUrl:', item);
+      continue;
+    }
 
-    try {
-      const downloadUrl = `${baseUrl}=w2048-h1536`;
-      const blob = await fetchPhotoBlob(downloadUrl, accessToken);
+    let blob: Blob | null = null;
+    // Try multiple download options: =w2048, =d, =w2048-h1536, raw baseUrl
+    const downloadUrls = [
+      baseUrl.includes('?') ? `${baseUrl}&w=2048` : `${baseUrl}=w2048`,
+      baseUrl.includes('?') ? `${baseUrl}&d=true` : `${baseUrl}=d`,
+      baseUrl.includes('?') ? `${baseUrl}&w=2048&h=1536` : `${baseUrl}=w2048-h1536`,
+      baseUrl,
+    ];
 
-      const cachedPhoto: CachedPhoto = {
-        id: item.id || `gphoto_${Date.now()}_${i}`,
-        albumId,
-        filename,
-        mimeType,
-        creationTime: item.createTime || new Date().toISOString(),
-        width,
-        height,
-        blob,
-        cachedAt: Date.now(),
-        sizeBytes: blob.size,
-      };
-
-      await db.savePhoto(cachedPhoto);
-      if (!firstCoverUrl) {
-        firstCoverUrl = baseUrl;
+    for (const dUrl of downloadUrls) {
+      try {
+        blob = await fetchPhotoBlob(dUrl, accessToken);
+        if (blob && blob.size > 0) break;
+      } catch (err) {
+        // try next candidate URL
       }
-    } catch (photoErr) {
-      console.warn('Failed to download picked photo:', filename, photoErr);
+    }
+
+    if (blob && blob.size > 0) {
+      try {
+        const cachedPhoto: CachedPhoto = {
+          id: item.id || `gphoto_${Date.now()}_${i}`,
+          albumId,
+          filename,
+          mimeType,
+          creationTime: item.createTime || new Date().toISOString(),
+          width,
+          height,
+          blob,
+          cachedAt: Date.now(),
+          sizeBytes: blob.size,
+        };
+
+        await db.savePhoto(cachedPhoto);
+        if (!firstCoverUrl) {
+          firstCoverUrl = baseUrl;
+        }
+      } catch (saveErr) {
+        console.warn('Failed to save picked photo into IndexedDB:', filename, saveErr);
+      }
+    } else {
+      console.warn('Failed to download any blob for photo:', filename);
     }
   }
 
   const cachedPhotos = await db.getPhotosByAlbum(albumId);
+  if (cachedPhotos.length === 0) {
+    throw new Error('Could not download image data for the selected photos. Please check your connection and try again.');
+  }
+
   const newAlbum: Album = {
     id: albumId,
     title: albumTitle || `Google Photos (${new Date().toLocaleDateString()})`,

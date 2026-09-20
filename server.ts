@@ -24,23 +24,54 @@ async function startServer() {
 
       // Basic validation to only proxy valid URLs (like Google Photos lh3.googleusercontent.com or images)
       const parsedUrl = new URL(targetUrl);
+      // Allow Google Photos, Google CDNs, Unsplash, and standard image hosts
+      const host = parsedUrl.hostname.toLowerCase();
       const isAllowedHost = 
-        parsedUrl.hostname.endsWith('googleusercontent.com') ||
-        parsedUrl.hostname.endsWith('unsplash.com') ||
-        parsedUrl.hostname.endsWith('picsum.photos');
+        host.includes('google') ||
+        host.includes('ggpht') ||
+        host.includes('unsplash') ||
+        host.includes('picsum.photos');
 
       if (!isAllowedHost) {
         return res.status(403).json({ error: 'Domain not allowed for proxying' });
       }
 
-      const response = await fetch(targetUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        },
+      // Forward Authorization header if provided by client (required by Google Photos Picker API baseUrls)
+      const authHeader = req.headers['authorization'];
+      const headers: Record<string, string> = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      };
+      if (authHeader) {
+        headers['Authorization'] = authHeader;
+      }
+
+      let response = await fetch(targetUrl, {
+        headers,
+        redirect: 'manual',
       });
 
+      // Handle HTTP redirects (301, 302, 303, 307, 308)
+      if (response.status >= 300 && response.status < 400) {
+        const redirectUrl = response.headers.get('location');
+        if (redirectUrl) {
+          const redirectHeaders: Record<string, string> = {
+            'User-Agent': headers['User-Agent'],
+            Accept: headers['Accept'],
+          };
+          // Don't forward Authorization header if redirect location is already signed (avoids dual-auth rejection)
+          if (authHeader && !redirectUrl.includes('x-goog-signature') && !redirectUrl.includes('Signature=')) {
+            redirectHeaders['Authorization'] = authHeader;
+          }
+          response = await fetch(redirectUrl, {
+            headers: redirectHeaders,
+            redirect: 'follow',
+          });
+        }
+      }
+
       if (!response.ok) {
+        console.warn(`[Proxy Photo] Upstream error ${response.status} ${response.statusText} for URL: ${targetUrl.slice(0, 100)}...`);
         return res.status(response.status).json({ error: `Failed to fetch image: ${response.statusText}` });
       }
 
