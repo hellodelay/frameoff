@@ -15,6 +15,7 @@ import {
   RefreshCw,
   X,
   Home,
+  Plus,
 } from 'lucide-react';
 import { Album, FrameSettings, SyncState } from '../types';
 
@@ -31,6 +32,7 @@ interface ControlsOverlayProps {
   onOpenSettings: () => void;
   onGoHome: () => void;
   onManualSync: () => void;
+  onAddPhotos?: () => void;
   currentAlbum: Album | null;
   syncState: SyncState;
   syncProgressText?: string;
@@ -52,6 +54,7 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
   onOpenSettings,
   onGoHome,
   onManualSync,
+  onAddPhotos,
   currentAlbum,
   syncState,
   syncProgressText,
@@ -137,6 +140,19 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
                 : 'Sync Photos'}
             </span>
           </button>
+
+          {/* Quick Add Photos button */}
+          {onAddPhotos && currentAlbum && !currentAlbum.isSampleAlbum && (
+            <button
+              id="btn-overlay-add-photos"
+              onClick={onAddPhotos}
+              className="flex items-center gap-1.5 bg-zinc-900/80 hover:bg-zinc-800 text-xs px-3 py-2 rounded-xl border border-white/10 text-amber-300 transition-colors"
+              title="Add more photos from Google Photos directly into this album"
+            >
+              <Plus className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Add Photos</span>
+            </button>
+          )}
 
           {/* Screen Wake Lock Status */}
           <div

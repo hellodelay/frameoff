@@ -17,6 +17,7 @@ export interface Album {
   isSampleAlbum?: boolean;
   isLocalAlbum?: boolean;
   isPickerAlbum?: boolean;
+  googleAlbumId?: string;
   lastSyncedAt?: number;
   cachedCount?: number;
 }

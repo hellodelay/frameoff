@@ -11,6 +11,7 @@ declare global {
             client_id: string;
             scope: string;
             prompt?: string;
+            hint?: string;
             callback: (response: {
               access_token?: string;
               expires_in?: number;
@@ -18,8 +19,9 @@ declare global {
               error?: string;
               error_description?: string;
             }) => void;
+            error_callback?: (error: any) => void;
           }) => {
-            requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+            requestAccessToken: (overrideConfig?: { prompt?: string; hint?: string }) => void;
           };
         };
       };
@@ -30,9 +32,10 @@ declare global {
 const STORAGE_KEY_AUTH = 'gphotos_auth_user';
 const STORAGE_KEY_CLIENT_ID = 'gphotos_custom_client_id';
 
-// Scopes for Google Photos modern Picker API
+// Scopes for Google Photos: Modern Picker API, Library API for reading albums & shared albums, and userinfo
 export const GOOGLE_PHOTOS_SCOPES = [
   'https://www.googleapis.com/auth/photospicker.mediaitems.readonly',
+  'https://www.googleapis.com/auth/photoslibrary.readonly',
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/userinfo.email',
 ].join(' ');
@@ -212,28 +215,147 @@ export function hasPickerScope(user: AuthUser | null): boolean {
   return true;
 }
 
+export function waitForGoogleSdk(timeoutMs: number = 8000): Promise<boolean> {
+  if (typeof window !== 'undefined' && window.google?.accounts?.oauth2) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (typeof window !== 'undefined' && window.google?.accounts?.oauth2) {
+        clearInterval(interval);
+        resolve(true);
+      } else if (Date.now() - start > timeoutMs) {
+        clearInterval(interval);
+        resolve(false);
+      }
+    }, 150);
+  });
+}
+
 /**
- * Request OAuth consent explicitly (e.g. prompt: 'consent') to ensure Google
- * presents the permission screen with Google Photos Picker scope.
+ * Attempts a silent token refresh without opening any popups or consent screens.
+ * Leverages Google's existing active user session and granted client authorization.
  */
-export function requestLoginWithConsent(
-  clientId: string,
-  promptType: 'consent' | 'select_account' | '' = 'consent'
-): Promise<AuthUser> {
+export async function requestSilentAuthToken(clientId: string, userEmail?: string): Promise<AuthUser> {
+  const sdkReady = await waitForGoogleSdk();
+  if (!sdkReady) {
+    throw new Error('Google Identity Services SDK is not loaded yet.');
+  }
+  if (!clientId) {
+    throw new Error('Google OAuth Client ID is required.');
+  }
+
   return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || !window.google?.accounts?.oauth2) {
-      reject(new Error('Google Identity Services SDK is not loaded. Please wait a moment and try again.'));
-      return;
-    }
-    if (!clientId) {
-      reject(new Error('Google OAuth Client ID is missing. Please configure it in Settings.'));
-      return;
-    }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('Silent token request timed out.'));
+      }
+    }, 10000);
 
     try {
-      const client = window.google.accounts.oauth2.initTokenClient({
+      const client = window.google!.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: GOOGLE_PHOTOS_SCOPES,
+        hint: userEmail || undefined,
+        callback: async (response: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+
+          if (response.error) {
+            reject(new Error(response.error_description || response.error));
+            return;
+          }
+          if (!response.access_token) {
+            reject(new Error('No access token returned.'));
+            return;
+          }
+
+          const expiresIn = response.expires_in || 3600;
+          const expiresAt = Date.now() + expiresIn * 1000;
+
+          const existing = getCachedAuthUser();
+          let name = existing?.name || 'Google Photos User';
+          let email = existing?.email || userEmail || '';
+          let picture = existing?.picture || '';
+
+          try {
+            const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+              headers: { Authorization: `Bearer ${response.access_token}` },
+            });
+            if (userInfoRes.ok) {
+              const profile = await userInfoRes.json();
+              name = profile.name || name;
+              email = profile.email || email;
+              picture = profile.picture || picture;
+            }
+          } catch {
+            // ignore
+          }
+
+          const authUser: AuthUser = {
+            name,
+            email,
+            picture,
+            accessToken: response.access_token,
+            expiresAt,
+            scope: response.scope || existing?.scope,
+          };
+
+          saveCachedAuthUser(authUser);
+          resolve(authUser);
+        },
+        error_callback: (err: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(err?.message || 'Silent auth failed'));
+        },
+      });
+
+      // prompt: '' tells Google to use existing active consent silently without showing any UI
+      client.requestAccessToken({ prompt: '', hint: userEmail || undefined });
+    } catch (e: any) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(e);
+      }
+    }
+  });
+}
+
+/**
+ * Interactive token request for initial login or when explicit user interaction is needed.
+ * By default prompt is '' (empty string), which avoids re-asking for permissions if already granted.
+ */
+export async function requestAuthTokenInteractive(
+  clientId: string,
+  options?: {
+    prompt?: 'consent' | 'select_account' | '';
+    hint?: string;
+  }
+): Promise<AuthUser> {
+  const sdkReady = await waitForGoogleSdk();
+  if (!sdkReady) {
+    throw new Error('Google Identity Services SDK is not loaded. Please wait a moment and try again.');
+  }
+  if (!clientId) {
+    throw new Error('Google OAuth Client ID is missing. Please configure it in Settings.');
+  }
+
+  const promptType = options?.prompt !== undefined ? options.prompt : '';
+  const hint = options?.hint;
+
+  return new Promise((resolve, reject) => {
+    try {
+      const client = window.google!.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: GOOGLE_PHOTOS_SCOPES,
+        hint: hint || undefined,
         callback: async (response: any) => {
           if (response.error) {
             reject(new Error(response.error_description || response.error));
@@ -247,9 +369,10 @@ export function requestLoginWithConsent(
           const expiresIn = response.expires_in || 3600;
           const expiresAt = Date.now() + expiresIn * 1000;
 
-          let name = 'Google Photos User';
-          let email = '';
-          let picture = '';
+          const existing = getCachedAuthUser();
+          let name = existing?.name || 'Google Photos User';
+          let email = existing?.email || hint || '';
+          let picture = existing?.picture || '';
 
           try {
             const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -277,13 +400,74 @@ export function requestLoginWithConsent(
           saveCachedAuthUser(authUser);
           resolve(authUser);
         },
+        error_callback: (err: any) => {
+          reject(new Error(err?.message || 'Authentication failed'));
+        },
       });
 
-      client.requestAccessToken({ prompt: promptType });
+      const reqConfig: { prompt?: string; hint?: string } = {
+        prompt: promptType,
+      };
+      if (hint) reqConfig.hint = hint;
+
+      client.requestAccessToken(reqConfig);
     } catch (e: any) {
       reject(e);
     }
   });
+}
+
+/**
+ * Ensures the app has a fresh, valid token for picking photos without prompting the user.
+ * 1. Checks if existing token in memory/localStorage is still valid.
+ * 2. If expired or missing, tries silent background refresh first.
+ * 3. Only falls back to an interactive prompt if silent refresh is not possible.
+ */
+export async function ensureFreshAuthToken(
+  clientId: string,
+  currentUser: AuthUser | null,
+  forceConsent: boolean = false
+): Promise<AuthUser> {
+  if (!clientId) {
+    throw new Error('Google OAuth Client ID is required. Please configure it in Settings.');
+  }
+
+  // 1. If we already have a valid token with proper picker scope and not forcing consent, reuse it!
+  if (!forceConsent && currentUser && isTokenValid(currentUser) && hasPickerScope(currentUser)) {
+    return currentUser;
+  }
+
+  const emailHint = currentUser?.email || getCachedAuthUser()?.email;
+
+  // 2. If not forcing consent, attempt silent background refresh first (zero UI prompt)
+  if (!forceConsent && emailHint) {
+    try {
+      const refreshed = await requestSilentAuthToken(clientId, emailHint);
+      if (hasPickerScope(refreshed)) {
+        return refreshed;
+      }
+    } catch (silentErr) {
+      console.log('[Auth] Silent token refresh not available, will use interactive prompt:', silentErr);
+    }
+  }
+
+  // 3. Interactive prompt (prompt: '' by default so already-consented scopes don't prompt again)
+  const authUser = await requestAuthTokenInteractive(clientId, {
+    prompt: forceConsent ? 'consent' : '',
+    hint: emailHint,
+  });
+
+  return authUser;
+}
+
+/**
+ * Backward compatible wrapper for legacy calls.
+ */
+export function requestLoginWithConsent(
+  clientId: string,
+  promptType: 'consent' | 'select_account' | '' = ''
+): Promise<AuthUser> {
+  return requestAuthTokenInteractive(clientId, { prompt: promptType });
 }
 
 /**
@@ -409,6 +593,7 @@ export async function fetchGoogleAlbums(accessToken: string): Promise<FetchAlbum
         for (const a of data.albums) {
           albums.push({
             id: a.id,
+            googleAlbumId: a.id,
             title: a.title || 'Untitled Album',
             coverPhotoBaseUrl: a.coverPhotoBaseUrl,
             mediaItemsCount: a.mediaItemsCount ? Number(a.mediaItemsCount) : undefined,
@@ -457,6 +642,7 @@ export async function fetchGoogleAlbums(accessToken: string): Promise<FetchAlbum
             if (!albums.find((existing) => existing.id === a.id)) {
               albums.push({
                 id: a.id,
+                googleAlbumId: a.id,
                 title: `${a.title || 'Shared Album'} (Shared)`,
                 coverPhotoBaseUrl: a.coverPhotoBaseUrl,
                 mediaItemsCount: a.mediaItemsCount ? Number(a.mediaItemsCount) : undefined,
@@ -597,17 +783,30 @@ export async function importPickerPhotos(
   mediaItems: any[],
   albumTitle: string,
   accessToken: string,
-  onProgress?: (curr: number, total: number, name: string) => void
-): Promise<Album> {
+  onProgress?: (curr: number, total: number, name: string) => void,
+  existingAlbumId?: string
+): Promise<{ album: Album; addedCount: number }> {
   if (!mediaItems || mediaItems.length === 0) {
     throw new Error('No photos were selected.');
   }
 
-  const albumId = `picker_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const isExisting = !!existingAlbumId;
+  const albumId = existingAlbumId || `picker_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   let firstCoverUrl = '';
+
+  // If adding to an existing album, check existing photo IDs to avoid re-downloading
+  const existingPhotos = isExisting ? await db.getPhotosByAlbum(albumId) : [];
+  const existingIdSet = new Set(existingPhotos.map((p) => p.id));
+  let addedCount = 0;
 
   for (let i = 0; i < mediaItems.length; i++) {
     const item = mediaItems[i];
+    const itemId = item.id || `gphoto_${Date.now()}_${i}`;
+
+    if (existingIdSet.has(itemId)) {
+      continue; // Skip photo already in album
+    }
+
     const filename = item.mediaFile?.filename || item.filename || `photo_${i + 1}.jpg`;
     const baseUrl = item.mediaFile?.baseUrl || item.baseUrl;
     const mimeType = item.mediaFile?.mimeType || item.mimeType || 'image/jpeg';
@@ -648,7 +847,7 @@ export async function importPickerPhotos(
     if (blob && blob.size > 0) {
       try {
         const cachedPhoto: CachedPhoto = {
-          id: item.id || `gphoto_${Date.now()}_${i}`,
+          id: itemId,
           albumId,
           filename,
           mimeType,
@@ -661,6 +860,7 @@ export async function importPickerPhotos(
         };
 
         await db.savePhoto(cachedPhoto);
+        addedCount++;
         if (!firstCoverUrl) {
           firstCoverUrl = baseUrl;
         }
@@ -677,18 +877,23 @@ export async function importPickerPhotos(
     throw new Error('Could not download image data for the selected photos. Please check your connection and try again.');
   }
 
-  const newAlbum: Album = {
+  // If existing album, preserve existing album properties
+  const existingAlbum = isExisting ? await db.getAlbum(albumId) : null;
+
+  const finalAlbum: Album = {
     id: albumId,
-    title: albumTitle || `Google Photos (${new Date().toLocaleDateString()})`,
+    title: existingAlbum?.title || albumTitle || `Google Photos (${new Date().toLocaleDateString()})`,
     mediaItemsCount: cachedPhotos.length,
     cachedCount: cachedPhotos.length,
     lastSyncedAt: Date.now(),
-    coverPhotoBaseUrl: firstCoverUrl || undefined,
-    isPickerAlbum: true,
+    coverPhotoBaseUrl: firstCoverUrl || existingAlbum?.coverPhotoBaseUrl || undefined,
+    isPickerAlbum: existingAlbum?.isPickerAlbum ?? true,
+    isLocalAlbum: existingAlbum?.isLocalAlbum,
+    googleAlbumId: existingAlbum?.googleAlbumId,
   };
 
-  await db.saveAlbum(newAlbum);
-  return newAlbum;
+  await db.saveAlbum(finalAlbum);
+  return { album: finalAlbum, addedCount };
 }
 
 // -------------------------------------------------------------
@@ -874,13 +1079,36 @@ export async function syncAlbumToCache(
     return { added, removed: 0, total: updatedAlbum.cachedCount || 0 };
   }
 
+  // Handle local album
+  if (album.isLocalAlbum) {
+    const existing = await db.getPhotosByAlbum(album.id);
+    return { added: 0, removed: 0, total: existing.length };
+  }
+
   // Google Photos real album sync
   if (!accessToken) {
     throw new Error('Access token required to sync Google Photos album');
   }
 
+  // Determine target Google Photos album ID
+  const googlePhotosAlbumId =
+    album.googleAlbumId || (!album.isPickerAlbum && !album.isLocalAlbum && !album.isSampleAlbum ? album.id : null);
+
+  if (!googlePhotosAlbumId) {
+    // For picker-based albums without a linked Library album ID, return existing cached photos
+    const existing = await db.getPhotosByAlbum(album.id);
+    return { added: 0, removed: 0, total: existing.length };
+  }
+
   // 1. Fetch live media item list from Google Photos API
-  const liveItems = await fetchAlbumMediaItems(album.id, accessToken, 200);
+  let liveItems: GooglePhotoItem[] = [];
+  try {
+    liveItems = await fetchAlbumMediaItems(googlePhotosAlbumId, accessToken, 200);
+  } catch (fetchErr: any) {
+    console.warn('[Sync] Could not fetch live media items from Google Photos Library API:', fetchErr);
+    const existing = await db.getPhotosByAlbum(album.id);
+    return { added: 0, removed: 0, total: existing.length };
+  }
 
   // 2. Fetch existing cached photos from IndexedDB
   const existingPhotos = await db.getPhotosByAlbum(album.id);

@@ -26,6 +26,7 @@ import {
   Upload,
   RefreshCw,
   Info,
+  Plus,
 } from 'lucide-react';
 import { Album, AuthUser, FrameSettings } from '../types';
 import { getEffectiveClientId, saveCustomClientId, sanitizeClientId } from '../services/googlePhotos';
@@ -47,6 +48,8 @@ interface HomePageProps {
   isOnline: boolean;
   isWakeLockActive: boolean;
   onStartGooglePicker?: () => Promise<void>;
+  onAddPhotosToAlbum?: (album: Album) => Promise<void>;
+  onSyncAlbum?: (album: Album) => Promise<void>;
   onImportLocalPhotos?: (files: FileList | File[], title?: string) => Promise<void>;
   albumFetchError?: string | null;
   isPickingGooglePhotos?: boolean;
@@ -69,6 +72,8 @@ export const HomePage: React.FC<HomePageProps> = ({
   isOnline,
   isWakeLockActive,
   onStartGooglePicker,
+  onAddPhotosToAlbum,
+  onSyncAlbum,
   onImportLocalPhotos,
   albumFetchError,
   isPickingGooglePhotos,
@@ -217,7 +222,31 @@ export const HomePage: React.FC<HomePageProps> = ({
               </p>
             </div>
 
-            <div className="flex items-center gap-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              {currentAlbum && !currentAlbum.isSampleAlbum && onAddPhotosToAlbum && (
+                <button
+                  id="btn-hero-add-photos"
+                  onClick={() => onAddPhotosToAlbum(currentAlbum)}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 text-amber-300 font-medium text-sm border border-zinc-700 transition-all"
+                  title="Pick and add new photos from Google Photos directly into this active album"
+                >
+                  <Plus className="w-4 h-4 text-amber-400" />
+                  <span>Add Photos</span>
+                </button>
+              )}
+
+              {currentAlbum && onSyncAlbum && (currentAlbum.googleAlbumId || !currentAlbum.isPickerAlbum) && (
+                <button
+                  id="btn-hero-sync-album"
+                  onClick={() => onSyncAlbum(currentAlbum)}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 font-medium text-sm border border-zinc-700 transition-all"
+                  title="Check Google Photos for newly added photos and download them"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Sync Now</span>
+                </button>
+              )}
+
               <button
                 id="btn-return-to-album"
                 onClick={onReturnToFrame}
@@ -279,12 +308,12 @@ export const HomePage: React.FC<HomePageProps> = ({
               </div>
 
               {/* Action Buttons for Logged-In User */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <button
                   id="btn-pick-google-photos-home"
                   onClick={onStartGooglePicker}
                   disabled={isPickingGooglePhotos}
-                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-semibold text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60 col-span-1 sm:col-span-2"
+                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-semibold text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-60"
                 >
                   {isPickingGooglePhotos ? (
                     <>
@@ -303,10 +332,23 @@ export const HomePage: React.FC<HomePageProps> = ({
                           d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
                         />
                       </svg>
-                      <span>Pick from Google Photos</span>
+                      <span>New Album from Google</span>
                     </>
                   )}
                 </button>
+
+                {currentAlbum && !currentAlbum.isSampleAlbum && onAddPhotosToAlbum && (
+                  <button
+                    id="btn-add-to-active-album-home"
+                    onClick={() => onAddPhotosToAlbum(currentAlbum)}
+                    disabled={isPickingGooglePhotos}
+                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-amber-200 font-medium text-sm border border-amber-500/30 transition-colors"
+                    title={`Add more photos into "${currentAlbum.title}"`}
+                  >
+                    <Plus className="w-4 h-4 text-amber-400" />
+                    <span className="truncate">Add to "{currentAlbum.title}"</span>
+                  </button>
+                )}
 
                 <button
                   id="btn-choose-album-home"
@@ -314,7 +356,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-medium text-sm border border-zinc-700 transition-colors"
                 >
                   <FolderOpen className="w-4 h-4 text-amber-400" />
-                  Choose Albums
+                  <span>Choose Albums</span>
                 </button>
 
                 <button
@@ -323,7 +365,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white font-medium text-sm border border-zinc-700 transition-colors"
                 >
                   <Upload className="w-4 h-4 text-emerald-400" />
-                  Upload Photos
+                  <span>Upload Photos</span>
                 </button>
 
                 <button
@@ -333,7 +375,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   title="Sign in with a different Google account"
                 >
                   <UserPlus className="w-4 h-4 text-blue-400" />
-                  Switch User
+                  <span>Switch User</span>
                 </button>
 
                 <button
@@ -342,16 +384,21 @@ export const HomePage: React.FC<HomePageProps> = ({
                   className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-900 hover:bg-rose-950/40 text-zinc-300 hover:text-rose-400 font-medium text-sm border border-zinc-800 hover:border-rose-900/50 transition-colors"
                 >
                   <LogOut className="w-4 h-4" />
-                  Sign Out
+                  <span>Sign Out</span>
                 </button>
               </div>
 
               {/* Tip for picking albums */}
-              <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 flex items-start gap-2.5 text-xs text-zinc-400">
+              <div className="p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 flex items-start gap-3 text-xs text-zinc-400">
                 <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <p>
-                  <strong className="text-zinc-200">Importing an album from Google:</strong> Click <strong className="text-amber-400">"Pick from Google Photos"</strong>, select the <strong className="text-zinc-200">"Albums"</strong> tab in the Google window, open any album, and select the photos you want to show. Pictorial will download and cache them for 100% offline playback.
-                </p>
+                <div className="space-y-1">
+                  <p>
+                    <strong className="text-zinc-200">How to pick from an Album:</strong> In the Google Photos window, type your album's name into the top search bar (<strong className="text-amber-300">"Search your photos and albums"</strong>) to show that album's photos.
+                  </p>
+                  <p className="text-[11px] text-zinc-500">
+                    Select photos by clicking their top-left check circle (or click the date checkmark to select all), then click <strong className="text-blue-400">"Done"</strong> in the top right.
+                  </p>
+                </div>
               </div>
 
               {/* Diagnostic Banner if Google Photos API returned 403 or disabled */}

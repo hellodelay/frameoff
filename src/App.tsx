@@ -11,6 +11,7 @@ import {
   clearAllAuthAndCredentials,
   createPickerSession,
   deletePickerSession,
+  ensureFreshAuthToken,
   fetchGoogleAlbums,
   getCachedAuthUser,
   getEffectiveClientId,
@@ -21,10 +22,13 @@ import {
   initGoogleTokenClient,
   isTokenValid,
   listPickerMediaItems,
+  requestAuthTokenInteractive,
   requestLogin,
   requestLoginWithConsent,
+  requestSilentAuthToken,
   saveCachedAuthUser,
   syncAlbumToCache,
+  waitForGoogleSdk,
 } from './services/googlePhotos';
 import { SAMPLE_ALBUM, SAMPLE_PHOTOS_RAW } from './services/sampleData';
 
@@ -114,6 +118,25 @@ export default function App() {
       const cachedUser = getCachedAuthUser();
       if (cachedUser) {
         setAuthUser(cachedUser);
+
+        // Proactively refresh the token silently in background so user doesn't have to re-login
+        if (cachedUser.email) {
+          waitForGoogleSdk(12000).then(async (sdkReady) => {
+            if (!sdkReady) return;
+            try {
+              const savedSet = await db.getSettings();
+              const cid = savedSet?.googleClientId || getEffectiveClientId();
+              if (cid) {
+                console.log('[Auth Init] Silently renewing cached session for:', cachedUser.email);
+                const fresh = await requestSilentAuthToken(cid, cachedUser.email);
+                setAuthUser(fresh);
+                console.log('[Auth Init] Session silently refreshed, valid until:', new Date(fresh.expiresAt).toLocaleTimeString());
+              }
+            } catch (err) {
+              console.log('[Auth Init] Background token renewal will run on user action:', err);
+            }
+          });
+        }
       }
 
       // Check storage stats
@@ -181,6 +204,30 @@ export default function App() {
     }
   }, [settings.keepScreenOn]);
 
+  // Proactive background token keepalive: keeps the session alive indefinitely
+  useEffect(() => {
+    const effectiveClientId = settings.googleClientId || getEffectiveClientId();
+    if (!effectiveClientId || !authUser?.email || !isOnline) return;
+
+    // Check periodically: if token expires in less than 15 minutes, silently refresh
+    const checkAndRefresh = async () => {
+      const needsRefresh = !authUser.expiresAt || Date.now() > authUser.expiresAt - 15 * 60 * 1000;
+      if (needsRefresh) {
+        try {
+          console.log('[Auth Keepalive] Proactively renewing session in background for:', authUser.email);
+          const fresh = await requestSilentAuthToken(effectiveClientId, authUser.email);
+          setAuthUser(fresh);
+          console.log('[Auth Keepalive] Session extended until:', new Date(fresh.expiresAt).toLocaleTimeString());
+        } catch (err) {
+          console.log('[Auth Keepalive] Silent refresh attempt waiting for next window:', err);
+        }
+      }
+    };
+
+    const interval = setInterval(checkAndRefresh, 4 * 60 * 1000); // check every 4 minutes
+    return () => clearInterval(interval);
+  }, [authUser?.email, authUser?.expiresAt, settings.googleClientId, isOnline]);
+
   // Seed sample photos into IndexedDB for offline demo
   const seedSamplePhotos = async (sampleAlbum: Album) => {
     setSyncState('syncing');
@@ -201,12 +248,14 @@ export default function App() {
   };
 
   // Load photos for selected album from IndexedDB
-  const loadPhotosForAlbum = async (albumId: string) => {
+  const loadPhotosForAlbum = async (albumId: string, resetIndex: boolean = true) => {
     const cached = await db.getPhotosByAlbum(albumId);
     if (cached.length > 0) {
       setPhotos(cached);
-      setCurrentIndex(0);
-      setTimeRemainingSeconds(settings.transitionSpeed);
+      if (resetIndex) {
+        setCurrentIndex(0);
+        setTimeRemainingSeconds(settings.transitionSpeed);
+      }
     } else {
       setPhotos([]);
     }
@@ -358,7 +407,7 @@ export default function App() {
   };
 
   // Google Photos Picker API Workflow
-  const handleStartGooglePicker = async () => {
+  const handleStartGooglePicker = async (targetAlbum?: Album | null) => {
     const effectiveClientId = settings.googleClientId || getEffectiveClientId();
     if (!effectiveClientId) {
       alert(
@@ -467,27 +516,52 @@ export default function App() {
       console.log(`[Google Photos Picker] Retrieved ${pickedItems.length} media items`);
 
       if (pickedItems.length > 0) {
-        setSyncProgressText(`Importing ${pickedItems.length} photos from Google Photos...`);
+        const isExisting = !!targetAlbum;
+        const albumTitle = targetAlbum
+          ? targetAlbum.title
+          : `Google Photos (${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })})`;
 
-        const title = `Google Photos (${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })})`;
-        const newAlbum = await importPickerPhotos(
+        setSyncProgressText(
+          isExisting
+            ? `Adding ${pickedItems.length} photos to "${albumTitle}"...`
+            : `Importing ${pickedItems.length} photos from Google Photos...`
+        );
+
+        const { album: savedAlbum, addedCount } = await importPickerPhotos(
           pickedItems,
-          title,
+          albumTitle,
           token,
           (curr: number, total: number, name: string) => {
             setSyncProgressText(`Caching offline: ${curr}/${total} photos (${name})...`);
-          }
+          },
+          targetAlbum?.id
         );
 
-        const importedPhotos = await db.getPhotosByAlbum(newAlbum.id);
-        console.log(`[Google Photos Picker] Successfully cached ${importedPhotos.length} photos in album ${newAlbum.id}`);
+        const importedPhotos = await db.getPhotosByAlbum(savedAlbum.id);
+        console.log(`[Google Photos Picker] Successfully cached ${importedPhotos.length} photos in album ${savedAlbum.id}`);
 
         // Update albums state & indexedDB
         const allAlbums = await db.getAlbums();
+        if (!allAlbums.some((a) => a.id === SAMPLE_ALBUM.id)) {
+          allAlbums.unshift(SAMPLE_ALBUM);
+        }
         setAlbums(allAlbums);
-        setCurrentAlbum(newAlbum);
-        setPhotos(importedPhotos);
-        setCurrentIndex(0);
+        setCurrentAlbum(savedAlbum);
+
+        if (isExisting && currentAlbum?.id === targetAlbum.id && photos.length > 0) {
+          // Seamlessly append to active slideshow queue without interrupting current photo
+          setPhotos(importedPhotos);
+          setSyncProgressText(
+            addedCount > 0
+              ? `✨ Added ${addedCount} new photo${addedCount === 1 ? '' : 's'} to "${savedAlbum.title}"!`
+              : `Album "${savedAlbum.title}" is up to date.`
+          );
+        } else {
+          setPhotos(importedPhotos);
+          setCurrentIndex(0);
+          setTimeRemainingSeconds(settings.transitionSpeed);
+        }
+
         refreshStorageStats();
         setShowAlbumModal(false);
         setCurrentView('frame');
@@ -643,9 +717,14 @@ export default function App() {
       // Check if token is expired and refresh silently if possible
       if (!album.isSampleAlbum && (!authUser || !isTokenValid(authUser))) {
         const effectiveClientId = settings.googleClientId || getEffectiveClientId();
-        if (effectiveClientId && tokenClientRef.current) {
-          // Silent refresh
-          requestLogin(tokenClientRef.current, true);
+        if (effectiveClientId) {
+          try {
+            const fresh = await ensureFreshAuthToken(effectiveClientId, authUser);
+            setAuthUser(fresh);
+            token = fresh.accessToken;
+          } catch (e) {
+            console.log('Sync token refresh note:', e);
+          }
         }
       }
 
@@ -655,7 +734,7 @@ export default function App() {
 
       // Update current photos if this album is active
       if (currentAlbum?.id === album.id) {
-        await loadPhotosForAlbum(album.id);
+        await loadPhotosForAlbum(album.id, false);
       }
 
       // Update album in state
@@ -666,7 +745,11 @@ export default function App() {
       setAlbums(updatedAlbums);
 
       setSyncState('success');
-      setSyncProgressText(`Synced! ${result.added} new photos cached.`);
+      if (result.added > 0) {
+        setSyncProgressText(`✨ ${result.added} new photo${result.added > 1 ? 's' : ''} added to slideshow!`);
+      } else {
+        setSyncProgressText('Album is up to date.');
+      }
     } catch (err: any) {
       console.warn('Sync failed:', err);
       setSyncState('error');
@@ -695,10 +778,28 @@ export default function App() {
     refreshStorageStats();
   };
 
+  const handleRenameAlbum = async (albumId: string, newTitle: string) => {
+    const target = albums.find((a) => a.id === albumId);
+    if (!target) return;
+    const updated = { ...target, title: newTitle };
+    await db.saveAlbum(updated);
+    const all = await db.getAlbums();
+    if (!all.some((a) => a.id === SAMPLE_ALBUM.id)) {
+      all.unshift(SAMPLE_ALBUM);
+    }
+    setAlbums(all);
+    if (currentAlbum?.id === albumId) {
+      setCurrentAlbum(updated);
+    }
+  };
+
   const handleRefreshAlbums = async () => {
-    if (!authUser) return;
+    const effectiveClientId = settings.googleClientId || getEffectiveClientId();
+    if (!effectiveClientId || !authUser) return;
     try {
-      const result = await fetchGoogleAlbums(authUser.accessToken);
+      const freshUser = await ensureFreshAuthToken(effectiveClientId, authUser);
+      setAuthUser(freshUser);
+      const result = await fetchGoogleAlbums(freshUser.accessToken);
       if (result.albums.length > 0) {
         setAlbumFetchError(null);
         const merged = [SAMPLE_ALBUM, ...result.albums];
@@ -755,7 +856,9 @@ export default function App() {
           onUpdateSettings={handleUpdateSettings}
           isOnline={isOnline}
           isWakeLockActive={isWakeLockActive}
-          onStartGooglePicker={handleStartGooglePicker}
+          onStartGooglePicker={() => handleStartGooglePicker()}
+          onAddPhotosToAlbum={(album) => handleStartGooglePicker(album)}
+          onSyncAlbum={handleSyncAlbum}
           onImportLocalPhotos={handleImportLocalPhotos}
           albumFetchError={albumFetchError}
           isPickingGooglePhotos={isPickingGooglePhotos}
@@ -797,6 +900,7 @@ export default function App() {
               setCurrentView('home');
             }}
             onManualSync={() => currentAlbum && handleSyncAlbum(currentAlbum)}
+            onAddPhotos={() => handleStartGooglePicker(currentAlbum)}
             currentAlbum={currentAlbum}
             syncState={syncState}
             syncProgressText={syncProgressText}
@@ -824,8 +928,10 @@ export default function App() {
         }}
         syncState={syncState}
         storageStats={storageStats}
-        onStartGooglePicker={handleStartGooglePicker}
+        onStartGooglePicker={() => handleStartGooglePicker()}
+        onAddPhotosToAlbum={(album) => handleStartGooglePicker(album)}
         onImportLocalPhotos={handleImportLocalPhotos}
+        onRenameAlbum={handleRenameAlbum}
         albumFetchError={albumFetchError}
         isPickingGooglePhotos={isPickingGooglePhotos}
       />

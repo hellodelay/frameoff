@@ -14,6 +14,8 @@ import {
   Upload,
   Image as ImageIcon,
   Info,
+  Pencil,
+  Plus,
 } from 'lucide-react';
 import { Album, AuthUser, SyncState } from '../types';
 
@@ -31,7 +33,9 @@ interface AlbumPickerModalProps {
   syncState: SyncState;
   storageStats: { totalCount: number; totalBytes: number };
   onStartGooglePicker?: () => Promise<void>;
+  onAddPhotosToAlbum?: (album: Album) => Promise<void>;
   onImportLocalPhotos?: (files: FileList | File[], title?: string) => Promise<void>;
+  onRenameAlbum?: (albumId: string, newTitle: string) => Promise<void>;
   albumFetchError?: string | null;
   isPickingGooglePhotos?: boolean;
 }
@@ -50,12 +54,16 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
   syncState,
   storageStats,
   onStartGooglePicker,
+  onAddPhotosToAlbum,
   onImportLocalPhotos,
+  onRenameAlbum,
   albumFetchError,
   isPickingGooglePhotos,
 }) => {
   const [cachingAlbumId, setCachingAlbumId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [editingAlbumId, setEditingAlbumId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
@@ -206,16 +214,28 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
           </button>
         </div>
 
-        {/* Guidance on selecting photos & albums */}
-        <div className="mt-3 p-3 rounded-2xl bg-zinc-800/40 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-2.5">
+        {/* Guidance on selecting photos & albums with Google Photos Picker */}
+        <div className="mt-3 p-3.5 rounded-2xl bg-zinc-800/50 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-3">
           <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-0.5">
-            <p className="font-medium text-zinc-200">
-              How to import an Album from Google Photos:
+          <div className="space-y-1">
+            <p className="font-semibold text-zinc-100 flex items-center gap-1.5">
+              <span>How Google's Photo Picker Works:</span>
             </p>
-            <p className="text-zinc-400 leading-relaxed text-[11px]">
-              When the Google Photos window opens, navigate to the <strong>Albums</strong> tab, open your album, select the photos you want in your frame, and click <strong>Done</strong>. Google requires picking the media items inside an album, and Pictorial will automatically create a dedicated album and download them for 100% offline playback.
+            <p className="text-zinc-300 leading-relaxed text-[11.5px]">
+              Google's official picker displays a unified photo grid with a search bar at the top:{' '}
+              <strong className="text-amber-300">"Search your photos and albums"</strong>.
             </p>
+            <ul className="text-zinc-400 text-[11px] space-y-1 list-disc list-inside pt-0.5">
+              <li>
+                <strong className="text-zinc-200">Find an Album:</strong> Type your album's title into the top search bar to show its photos.
+              </li>
+              <li>
+                <strong className="text-zinc-200">Select Photos:</strong> Click the circle on any photo, or click the checkmark next to a date header (e.g. "Thu, Sep 17") to select the whole group.
+              </li>
+              <li>
+                <strong className="text-zinc-200">Import:</strong> Click the <strong className="text-blue-400">"Done"</strong> button in the top-right corner. Pictorial will automatically create a dedicated album and cache all photos locally for offline slideshow playback.
+              </li>
+            </ul>
           </div>
         </div>
 
@@ -317,17 +337,78 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
                     </div>
 
                     {/* Album Info */}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-medium text-white truncate max-w-[200px] sm:max-w-[280px]">
-                          {album.title}
-                        </h3>
-                        {isSelected && (
-                          <span className="flex items-center gap-1 text-[10px] font-semibold bg-amber-400/20 text-amber-400 px-2 py-0.5 rounded-full border border-amber-400/30">
-                            <Check className="w-3 h-3" /> Active
-                          </span>
-                        )}
-                      </div>
+                    <div className="min-w-0 flex-1">
+                      {editingAlbumId === album.id ? (
+                        <div
+                          className="flex items-center gap-1.5 py-0.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={async (e) => {
+                              if (e.key === 'Enter') {
+                                if (editingTitle.trim() && onRenameAlbum) {
+                                  await onRenameAlbum(album.id, editingTitle.trim());
+                                }
+                                setEditingAlbumId(null);
+                              } else if (e.key === 'Escape') {
+                                setEditingAlbumId(null);
+                              }
+                            }}
+                            autoFocus
+                            className="px-2 py-1 text-xs bg-zinc-950 border border-amber-400/60 rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-amber-400 w-full max-w-[220px]"
+                          />
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (editingTitle.trim() && onRenameAlbum) {
+                                await onRenameAlbum(album.id, editingTitle.trim());
+                              }
+                              setEditingAlbumId(null);
+                            }}
+                            className="p-1 rounded bg-amber-500 text-zinc-950 hover:bg-amber-400 text-xs font-semibold"
+                            title="Save"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingAlbumId(null);
+                            }}
+                            className="p-1 rounded bg-zinc-800 text-zinc-400 hover:text-white text-xs"
+                            title="Cancel"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-medium text-white truncate max-w-[170px] sm:max-w-[240px]">
+                            {album.title}
+                          </h3>
+                          {isSelected && (
+                            <span className="flex items-center gap-1 text-[10px] font-semibold bg-amber-400/20 text-amber-400 px-2 py-0.5 rounded-full border border-amber-400/30">
+                              <Check className="w-3 h-3" /> Active
+                            </span>
+                          )}
+                          {!album.isSampleAlbum && onRenameAlbum && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingAlbumId(album.id);
+                                setEditingTitle(album.title);
+                              }}
+                              className="opacity-60 hover:opacity-100 p-1 text-zinc-400 hover:text-amber-400 transition-opacity"
+                              title="Rename album"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      )}
 
                       <div className="flex items-center gap-3 text-xs text-zinc-400 mt-1">
                         {totalCount !== undefined && <span>{totalCount} photos</span>}
@@ -344,6 +425,22 @@ export const AlbumPickerModal: React.FC<AlbumPickerModalProps> = ({
 
                   {/* Actions for this album */}
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Add more photos to this album */}
+                    {onAddPhotosToAlbum && !album.isSampleAlbum && (
+                      <button
+                        id={`btn-add-photos-${album.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAddPhotosToAlbum(album);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-zinc-700 transition-colors"
+                        title="Pick and add new photos from Google Photos directly into this album"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="hidden sm:inline">Add Photos</span>
+                      </button>
+                    )}
+
                     <button
                       id={`btn-cache-album-${album.id}`}
                       onClick={(e) => handleCacheClick(e, album)}
