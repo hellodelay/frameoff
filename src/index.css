@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@keyframes kenburns-1 {
+  0% {
+    transform: scale(1) translate(0, 0);
+  }
+  100% {
+    transform: scale(1.08) translate(-1.5%, -1%);
+  }
+}
+
+@keyframes kenburns-2 {
+  0% {
+    transform: scale(1.08) translate(-1%, -1.5%);
+  }
+  100% {
+    transform: scale(1) translate(1%, 0.5%);
+  }
+}
+
+@keyframes kenburns-3 {
+  0% {
+    transform: scale(1) translate(1.5%, 1%);
+  }
+  100% {
+    transform: scale(1.09) translate(0%, -1.5%);
+  }
+}
+
+@keyframes kenburns-4 {
+  0% {
+    transform: scale(1.09) translate(-1%, 1%);
+  }
+  100% {
+    transform: scale(1) translate(0, 0);
+  }
+}
+
+.animate-kenburns-1 {
+  animation: kenburns-1 16s ease-out infinite alternate;
+}
+
+.animate-kenburns-2 {
+  animation: kenburns-2 16s ease-out infinite alternate;
+}
+
+.animate-kenburns-3 {
+  animation: kenburns-3 16s ease-out infinite alternate;
+}
+
+.animate-kenburns-4 {
+  animation: kenburns-4 16s ease-out infinite alternate;
+}
+
+/* Tablet fullscreen and GPU rendering optimizations */
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  background-color: #000000;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Force hardware accelerated compositing on transition containers */
+.hardware-accelerated {
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* Subtle bottom border progress bar animation */
+@keyframes screen-bottom-fill {
+  0% {
+    transform: scaleX(0);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+

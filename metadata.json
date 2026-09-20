@@ -1,0 +1,6 @@
+{
+  "name": "Pictorial",
+  "description": "An offline-first digital photo frame web app displaying Google Photos albums with local caching, auto-sync, transition effects, and screen wake lock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
