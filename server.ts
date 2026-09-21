@@ -100,7 +100,15 @@ async function startServer() {
       // 1. First check if base64 encoded URL is provided (bypasses any proxy query mangling)
       if (req.query.b64 && typeof req.query.b64 === 'string') {
         try {
-          rawUrl = Buffer.from(req.query.b64, 'base64').toString('utf8');
+          let decoded = Buffer.from(req.query.b64, 'base64').toString('utf8');
+          if (decoded.includes('%3A') || decoded.includes('%3a')) {
+            try {
+              decoded = decodeURIComponent(decoded);
+            } catch {}
+          }
+          if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+            rawUrl = decoded;
+          }
         } catch {
           // fallback to query.url
         }
@@ -112,21 +120,35 @@ async function startServer() {
       }
 
       // 3. Fallback: inspect originalUrl if query parsing truncated at an unencoded '?' or '&'
-      if (!rawUrl && req.originalUrl.includes('/api/fetch-shared-album?')) {
+      if (!rawUrl && req.originalUrl.includes('/api/fetch-shared-album')) {
         const queryStart = req.originalUrl.indexOf('?');
-        const qs = req.originalUrl.substring(queryStart + 1);
-        const match = qs.match(/(?:url|b64)=([^&]+)/);
-        if (match && match[1]) {
-          try {
-            rawUrl = decodeURIComponent(match[1]);
-          } catch {
-            rawUrl = match[1];
+        if (queryStart !== -1) {
+          const qs = req.originalUrl.substring(queryStart + 1);
+          const match = qs.match(/(?:url|b64)=([^&]+)/);
+          if (match && match[1]) {
+            try {
+              rawUrl = decodeURIComponent(match[1]);
+            } catch {
+              rawUrl = match[1];
+            }
           }
         }
       }
 
       if (!rawUrl || typeof rawUrl !== 'string') {
         return res.status(400).json({ error: 'Missing or invalid shared album url' });
+      }
+
+      // If rawUrl is still URI-encoded, decode it
+      if (rawUrl.includes('%3A') || rawUrl.includes('%3a')) {
+        try {
+          rawUrl = decodeURIComponent(rawUrl);
+        } catch {}
+      }
+
+      // Convert any lingering encoded query separators %3F / %3f into real query strings
+      if (rawUrl.includes('%3F') || rawUrl.includes('%3f')) {
+        rawUrl = rawUrl.replace(/%3f/gi, '?').replace(/%3d/gi, '=').replace(/%26/gi, '&');
       }
 
       // Recombine key if proxy split it into a separate req.query.key param
@@ -294,14 +316,14 @@ async function startServer() {
     }
   };
 
-  app.options('/api/fetch-shared-album', (_req, res) => {
+  app.options(['/api/fetch-shared-album', '/api/fetch-shared-album/'], (_req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.sendStatus(204);
   });
-  app.get('/api/fetch-shared-album', handleFetchSharedAlbum);
-  app.post('/api/fetch-shared-album', handleFetchSharedAlbum);
+  app.get(['/api/fetch-shared-album', '/api/fetch-shared-album/'], handleFetchSharedAlbum);
+  app.post(['/api/fetch-shared-album', '/api/fetch-shared-album/'], handleFetchSharedAlbum);
 
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV !== 'production') {

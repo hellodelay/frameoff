@@ -916,8 +916,8 @@ export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo
   const encodedUrl = encodeURIComponent(trimmed);
   let b64 = '';
   try {
-    // Unicode-safe base64 encoding
-    b64 = btoa(encodeURIComponent(trimmed));
+    // Unicode-safe base64 encoding (unescape so btoa receives 8-bit bytes)
+    b64 = btoa(unescape(encodeURIComponent(trimmed)));
   } catch {
     try {
       b64 = btoa(trimmed);
@@ -950,7 +950,7 @@ export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo
       if (res.status === 405) {
         msg = 'The server environment only supports GET requests (405). Please refresh the page.';
       } else if (res.status === 404) {
-        msg = 'Shared album not found. Please ensure link sharing is turned ON in Google Photos.';
+        msg = 'Album not found (404). Please ensure link sharing is turned ON in Google Photos (Share > "Create link").';
       } else if (res.status === 400) {
         msg = 'Invalid Google Photos link or sharing is restricted.';
       }
