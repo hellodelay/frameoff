@@ -235,6 +235,31 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
                 </button>
               )}
             </div>
+
+            {/* Quick Test Links */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-zinc-400">
+              <span className="text-zinc-500">Test links:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setUrl('https://photos.app.goo.gl/EsbymfNGcdqgT9fN7');
+                  setError(null);
+                }}
+                className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 border border-zinc-700/70 transition-colors text-[11.5px]"
+              >
+                photos.app.goo.gl (Short link)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUrl('https://photos.google.com/share/AF1QipNh3qjDAuvUMQlxxcvXH0yDnNX1DnSyxISM4d1N2GtiRdcDfAEjwLMPBJBOvmEdLg?key=WWhBZ3VlMW40S0RZM0tCd2lJcHg1aTU5RnJZdnJB');
+                  setError(null);
+                }}
+                className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 border border-zinc-700/70 transition-colors text-[11.5px]"
+              >
+                photos.google.com/share (Direct)
+              </button>
+            </div>
           </div>
 
           {/* Error Message */}

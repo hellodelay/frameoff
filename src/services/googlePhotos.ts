@@ -914,12 +914,23 @@ export interface SharedAlbumInfo {
 export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo> {
   const trimmed = url.trim();
   const encodedUrl = encodeURIComponent(trimmed);
-  let res: Response | null = null;
-  let lastError: Error | null = null;
-
-  // 1. Prioritize GET with credentials: 'include' (avoids 405 Method Not Allowed through auth proxies)
+  let b64 = '';
   try {
-    res = await fetch(`/api/fetch-shared-album?url=${encodedUrl}`, {
+    // Unicode-safe base64 encoding
+    b64 = btoa(encodeURIComponent(trimmed));
+  } catch {
+    try {
+      b64 = btoa(trimmed);
+    } catch {
+      b64 = '';
+    }
+  }
+
+  const endpoint = `/api/fetch-shared-album?url=${encodedUrl}${b64 ? `&b64=${encodeURIComponent(b64)}` : ''}`;
+
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
       method: 'GET',
       credentials: 'include',
       headers: {
@@ -927,34 +938,7 @@ export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo
       },
     });
   } catch (err: any) {
-    lastError = err;
-  }
-
-  // 2. If GET was not successful or returned 404/405, fallback to POST
-  if (!res || !res.ok) {
-    const shouldTryPost = !res || res.status === 405 || res.status === 404 || res.status >= 500;
-    if (shouldTryPost) {
-      try {
-        const postRes = await fetch('/api/fetch-shared-album', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({ url: trimmed }),
-        });
-        if (postRes.ok || !res) {
-          res = postRes;
-        }
-      } catch (err: any) {
-        if (!res) lastError = err;
-      }
-    }
-  }
-
-  if (!res) {
-    throw new Error(lastError?.message || 'Unable to connect to shared album service. Please check your network connection.');
+    throw new Error(err?.message || 'Unable to connect to shared album service. Please check your network connection.');
   }
 
   if (!res.ok) {
@@ -964,7 +948,11 @@ export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo
       msg = err.error || err.details || msg;
     } catch {
       if (res.status === 405) {
-        msg = 'Request method not supported. Please check that link sharing is enabled on this album (Share > "Create link").';
+        msg = 'The server environment only supports GET requests (405). Please refresh the page.';
+      } else if (res.status === 404) {
+        msg = 'Shared album not found. Please ensure link sharing is turned ON in Google Photos.';
+      } else if (res.status === 400) {
+        msg = 'Invalid Google Photos link or sharing is restricted.';
       }
     }
     throw new Error(msg);

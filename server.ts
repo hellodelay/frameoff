@@ -88,17 +88,50 @@ async function startServer() {
     }
   });
 
-  // Google Photos Shared Album link resolver & photo extractor (supports both GET and POST)
+  // Google Photos Shared Album link resolver & photo extractor (supports GET and POST)
   const handleFetchSharedAlbum = async (req: express.Request, res: express.Response) => {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     try {
-      const rawUrl = (req.method === 'GET' ? req.query.url : req.body?.url) as string;
+      let rawUrl = '';
+      // 1. First check if base64 encoded URL is provided (bypasses any proxy query mangling)
+      if (req.query.b64 && typeof req.query.b64 === 'string') {
+        try {
+          rawUrl = Buffer.from(req.query.b64, 'base64').toString('utf8');
+        } catch {
+          // fallback to query.url
+        }
+      }
+
+      // 2. If not found in b64, extract from query.url or body.url
+      if (!rawUrl) {
+        rawUrl = (req.method === 'GET' ? req.query.url : req.body?.url) as string;
+      }
+
+      // 3. Fallback: inspect originalUrl if query parsing truncated at an unencoded '?' or '&'
+      if (!rawUrl && req.originalUrl.includes('/api/fetch-shared-album?')) {
+        const queryStart = req.originalUrl.indexOf('?');
+        const qs = req.originalUrl.substring(queryStart + 1);
+        const match = qs.match(/(?:url|b64)=([^&]+)/);
+        if (match && match[1]) {
+          try {
+            rawUrl = decodeURIComponent(match[1]);
+          } catch {
+            rawUrl = match[1];
+          }
+        }
+      }
+
       if (!rawUrl || typeof rawUrl !== 'string') {
         return res.status(400).json({ error: 'Missing or invalid shared album url' });
+      }
+
+      // Recombine key if proxy split it into a separate req.query.key param
+      if (typeof req.query.key === 'string' && !rawUrl.includes('key=')) {
+        rawUrl = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}key=${req.query.key}`;
       }
 
       const trimmedUrl = rawUrl.trim();
@@ -263,7 +296,7 @@ async function startServer() {
 
   app.options('/api/fetch-shared-album', (_req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.sendStatus(204);
   });
