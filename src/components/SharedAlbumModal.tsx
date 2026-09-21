@@ -244,11 +244,11 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
                 <span className="leading-relaxed">{error}</span>
               </div>
-              {(error.includes('405') || error.includes('Method Not Allowed')) && (
+              {(error.includes('personal') || error.includes('private') || error.includes('Share Link') || error.includes('405') || error.includes('Method Not Allowed')) && (
                 <div className="p-2.5 rounded-lg bg-zinc-900/80 border border-zinc-700/60 text-[11.5px] text-zinc-300">
-                  <p className="font-semibold text-amber-300 mb-1">💡 Quick Fix for 405:</p>
-                  <p>
-                    Open your link (<code>photos.app.goo.gl/...</code>) in a browser tab. Once it opens, copy the full URL from your browser&apos;s address bar (it will start with <code>https://photos.google.com/share/...</code>) and paste it here!
+                  <p className="font-semibold text-amber-300 mb-1">💡 How to get a Google Photos Share Link:</p>
+                  <p className="leading-relaxed">
+                    In Google Photos, open the album and tap the <strong>Share</strong> button (or Options ⋮) &gt; select <strong>&quot;Create link&quot;</strong> or <strong>&quot;Copy link&quot;</strong>, then paste that link here.
                   </p>
                 </div>
               )}

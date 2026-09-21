@@ -90,6 +90,11 @@ async function startServer() {
 
   // Google Photos Shared Album link resolver & photo extractor (supports both GET and POST)
   const handleFetchSharedAlbum = async (req: express.Request, res: express.Response) => {
+    // Enable CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
     try {
       const rawUrl = (req.method === 'GET' ? req.query.url : req.body?.url) as string;
       if (!rawUrl || typeof rawUrl !== 'string') {
@@ -107,25 +112,34 @@ async function startServer() {
       const host = parsedUrl.hostname.toLowerCase();
       if (!host.includes('photos.app.goo.gl') && !host.includes('photos.google.com')) {
         return res.status(400).json({
-          error: 'Please enter a valid Google Photos shared link (e.g. https://photos.app.goo.gl/... or https://photos.google.com/share/...)',
+          error: 'Please enter a valid Google Photos link (e.g. https://photos.app.goo.gl/... or https://photos.google.com/share/...)',
+        });
+      }
+
+      // Detect if user copied private library address bar URL instead of a share link
+      const isPrivateAlbumUrl =
+        trimmedUrl.includes('photos.google.com/album/') ||
+        trimmedUrl.includes('/u/0/album/') ||
+        trimmedUrl.includes('/u/1/album/') ||
+        trimmedUrl.endsWith('/albums') ||
+        trimmedUrl.endsWith('/albums/');
+
+      if (isPrivateAlbumUrl && !trimmedUrl.includes('/share/')) {
+        return res.status(400).json({
+          error: 'This looks like an address bar link from your personal Google Photos library (photos.google.com/album/...). Google requires a Share Link: In Google Photos, open the album, click the Share icon (or Options ⋮) > "Create link" or "Copy link", then paste that link here!',
         });
       }
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
       let targetUrl = trimmedUrl;
 
-      // 1. If this is a shortened goo.gl link, resolve the redirect manually with explicit GET
+      // 1. If this is a shortened goo.gl link, resolve redirect without browser User-Agent so Google sends clean 302
       if (host.includes('photos.app.goo.gl')) {
         try {
           const redirectRes = await fetch(targetUrl, {
             method: 'GET',
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            },
             redirect: 'manual',
             signal: controller.signal,
           });
@@ -141,7 +155,7 @@ async function startServer() {
         }
       }
 
-      // 2. Fetch the target album HTML page with explicit GET
+      // 2. Fetch target album HTML with desktop browser headers so Google Photos returns full SSR markup
       let response: Response;
       try {
         response = await fetch(targetUrl, {
@@ -160,13 +174,16 @@ async function startServer() {
         clearTimeout(timeoutId);
       }
 
+      // If Google redirected to sign-in page, link sharing is not enabled on this album
+      if (response.url && response.url.includes('accounts.google.com')) {
+        return res.status(400).json({
+          error: 'This album is not publicly shared or link sharing is turned off. In Google Photos, open the album, click Share > "Create link" or "Copy link", and paste the generated link here.',
+        });
+      }
+
       if (!response.ok) {
-        let hint = '';
-        if (response.status === 405) {
-          hint = ' Google Photos returned 405. Please open the album link in your browser and copy the full URL from the browser address bar (photos.google.com/share/...).';
-        }
-        return res.status(response.status).json({
-          error: `Failed to load album (${response.status} ${response.statusText}).${hint}`,
+        return res.status(400).json({
+          error: `Google Photos returned status ${response.status} (${response.statusText}). Please check that link sharing is enabled for this album in Google Photos.`,
         });
       }
 
@@ -216,7 +233,7 @@ async function startServer() {
       if (extractedUrls.length === 0) {
         return res.status(404).json({
           error:
-            'No photos could be found at this link. Please ensure the link is a valid Google Photos shared album with link sharing enabled.',
+            'No photos could be found at this link. Please ensure link sharing is turned on for this album in Google Photos (Share > "Create link").',
         });
       }
 
@@ -244,6 +261,12 @@ async function startServer() {
     }
   };
 
+  app.options('/api/fetch-shared-album', (_req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.sendStatus(204);
+  });
   app.get('/api/fetch-shared-album', handleFetchSharedAlbum);
   app.post('/api/fetch-shared-album', handleFetchSharedAlbum);
 

@@ -501,6 +501,7 @@ export async function fetchPhotoBlob(imageUrl: string, accessToken?: string): Pr
       const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
       const proxyRes = await fetch(proxyUrl, {
         headers: Object.keys(headers).length > 0 ? headers : undefined,
+        credentials: 'include',
       });
       if (proxyRes.ok) {
         return await proxyRes.blob();
@@ -528,6 +529,7 @@ export async function fetchPhotoBlob(imageUrl: string, accessToken?: string): Pr
       const proxyUrl = `/api/proxy-photo?url=${encodeURIComponent(imageUrl)}`;
       const proxyRes = await fetch(proxyUrl, {
         headers: Object.keys(headers).length > 0 ? headers : undefined,
+        credentials: 'include',
       });
       if (proxyRes.ok) {
         return await proxyRes.blob();
@@ -910,33 +912,61 @@ export interface SharedAlbumInfo {
 }
 
 export async function fetchSharedAlbumInfo(url: string): Promise<SharedAlbumInfo> {
-  // Try POST first
-  let res = await fetch('/api/fetch-shared-album', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
-  });
+  const trimmed = url.trim();
+  const encodedUrl = encodeURIComponent(trimmed);
+  let res: Response | null = null;
+  let lastError: Error | null = null;
 
-  // If 405 Method Not Allowed or 404, fallback to GET query
-  if (res.status === 405 || res.status === 404) {
-    try {
-      const getRes = await fetch(`/api/fetch-shared-album?url=${encodeURIComponent(url)}`, {
-        method: 'GET',
-      });
-      if (getRes.ok) {
-        res = getRes;
+  // 1. Prioritize GET with credentials: 'include' (avoids 405 Method Not Allowed through auth proxies)
+  try {
+    res = await fetch(`/api/fetch-shared-album?url=${encodedUrl}`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+  } catch (err: any) {
+    lastError = err;
+  }
+
+  // 2. If GET was not successful or returned 404/405, fallback to POST
+  if (!res || !res.ok) {
+    const shouldTryPost = !res || res.status === 405 || res.status === 404 || res.status >= 500;
+    if (shouldTryPost) {
+      try {
+        const postRes = await fetch('/api/fetch-shared-album', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({ url: trimmed }),
+        });
+        if (postRes.ok || !res) {
+          res = postRes;
+        }
+      } catch (err: any) {
+        if (!res) lastError = err;
       }
-    } catch {
-      // Keep original response for error reporting
     }
   }
 
+  if (!res) {
+    throw new Error(lastError?.message || 'Unable to connect to shared album service. Please check your network connection.');
+  }
+
   if (!res.ok) {
-    let msg = `Server error (${res.status})`;
+    let msg = `Error (${res.status})`;
     try {
       const err = await res.json();
       msg = err.error || err.details || msg;
-    } catch {}
+    } catch {
+      if (res.status === 405) {
+        msg = 'Request method not supported. Please check that link sharing is enabled on this album (Share > "Create link").';
+      }
+    }
     throw new Error(msg);
   }
 
