@@ -6,8 +6,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Middleware for parsing JSON
-  app.use(express.json());
+  // Middleware for parsing JSON and URL-encoded bodies
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   // Health check endpoint
   app.get('/api/health', (_req, res) => {
@@ -90,17 +91,33 @@ async function startServer() {
 
   // Google Photos Shared Album link resolver & photo extractor (supports GET and POST)
   const handleFetchSharedAlbum = async (req: express.Request, res: express.Response) => {
-    // Enable CORS
+    // Enable CORS and disable caching
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     try {
       let rawUrl = '';
-      // 1. First check if base64 encoded URL is provided (bypasses any proxy query mangling)
-      if (req.query.b64 && typeof req.query.b64 === 'string') {
+
+      // 1. Check POST body JSON or form
+      if (req.body && typeof req.body.url === 'string' && req.body.url.trim()) {
+        rawUrl = req.body.url.trim();
+      } else if (req.body && typeof req.body.b64 === 'string' && req.body.b64.trim()) {
         try {
-          let decoded = Buffer.from(req.query.b64, 'base64').toString('utf8');
+          const decoded = Buffer.from(req.body.b64.trim(), 'base64').toString('utf8');
+          if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+            rawUrl = decoded;
+          }
+        } catch {}
+      }
+
+      // 2. Check query.b64 parameter
+      if (!rawUrl && req.query.b64 && typeof req.query.b64 === 'string') {
+        try {
+          let decoded = Buffer.from(req.query.b64.trim(), 'base64').toString('utf8');
           if (decoded.includes('%3A') || decoded.includes('%3a')) {
             try {
               decoded = decodeURIComponent(decoded);
@@ -109,17 +126,15 @@ async function startServer() {
           if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
             rawUrl = decoded;
           }
-        } catch {
-          // fallback to query.url
-        }
+        } catch {}
       }
 
-      // 2. If not found in b64, extract from query.url or body.url
-      if (!rawUrl) {
-        rawUrl = (req.method === 'GET' ? req.query.url : req.body?.url) as string;
+      // 3. Check query.url parameter
+      if (!rawUrl && req.query.url && typeof req.query.url === 'string') {
+        rawUrl = req.query.url.trim();
       }
 
-      // 3. Fallback: inspect originalUrl if query parsing truncated at an unencoded '?' or '&'
+      // 4. Fallback: inspect originalUrl to capture full query string without Express query truncation
       if (!rawUrl && req.originalUrl.includes('/api/fetch-shared-album')) {
         const queryStart = req.originalUrl.indexOf('?');
         if (queryStart !== -1) {
@@ -151,8 +166,8 @@ async function startServer() {
         rawUrl = rawUrl.replace(/%3f/gi, '?').replace(/%3d/gi, '=').replace(/%26/gi, '&');
       }
 
-      // Recombine key if proxy split it into a separate req.query.key param
-      if (typeof req.query.key === 'string' && !rawUrl.includes('key=')) {
+      // Recombine key if proxy or query parser split it into a separate req.query.key param
+      if (typeof req.query.key === 'string' && req.query.key && !rawUrl.includes('key=')) {
         rawUrl = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}key=${req.query.key}`;
       }
 
@@ -190,12 +205,16 @@ async function startServer() {
 
       let targetUrl = trimmedUrl;
 
-      // 1. If this is a shortened goo.gl link, resolve redirect without browser User-Agent so Google sends clean 302
+      // 1. If this is a shortened goo.gl link, resolve redirect
       if (host.includes('photos.app.goo.gl')) {
         try {
           const redirectRes = await fetch(targetUrl, {
             method: 'GET',
             redirect: 'manual',
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            },
             signal: controller.signal,
           });
 
@@ -231,14 +250,14 @@ async function startServer() {
 
       // If Google redirected to sign-in page, link sharing is not enabled on this album
       if (response.url && response.url.includes('accounts.google.com')) {
-        return res.status(400).json({
-          error: 'This album is not publicly shared or link sharing is turned off. In Google Photos, open the album, click Share > "Create link" or "Copy link", and paste the generated link here.',
+        return res.status(403).json({
+          error: 'This album requires Google account sign-in or link sharing is restricted. In Google Photos, open the album, tap Share > "Create link", and paste the new public link here.',
         });
       }
 
       if (!response.ok) {
-        return res.status(400).json({
-          error: `Google Photos returned status ${response.status} (${response.statusText}). Please check that link sharing is enabled for this album in Google Photos.`,
+        return res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({
+          error: `Google Photos returned status ${response.status} (${response.statusText}). Please check that link sharing is active for this album.`,
         });
       }
 
@@ -264,8 +283,8 @@ async function startServer() {
       // Extract photo base URLs
       const photoUrls = new Set<string>();
 
-      // 1. Primary pattern: modern Google Photos shared albums use lh3.googleusercontent.com/pw/...
-      const pwRegex = /https:\/\/lh3\.googleusercontent\.com\/pw\/([a-zA-Z0-9_\-]+)/g;
+      // 1. Primary pattern: unescaped pw URLs
+      const pwRegex = /https:\/\/lh[0-9]\.googleusercontent\.com\/pw\/([a-zA-Z0-9_\-]+)/g;
       let match: RegExpExecArray | null;
       while ((match = pwRegex.exec(html)) !== null) {
         const baseId = match[1].split('=')[0];
@@ -274,8 +293,17 @@ async function startServer() {
         }
       }
 
-      // 2. Secondary pattern: generic lh3 images without /a/ (avatar) or /ogw/
-      const generalRegex = /https:\/\/lh3\.googleusercontent\.com\/([a-zA-Z0-9_\-]{40,})/g;
+      // 2. JSON-escaped pw URLs
+      const pwEscRegex = /https:\\\/\\\/lh[0-9]\.googleusercontent\.com\\\/pw\\\/([a-zA-Z0-9_\-]+)/g;
+      while ((match = pwEscRegex.exec(html)) !== null) {
+        const baseId = match[1].split('=')[0];
+        if (baseId.length >= 20) {
+          photoUrls.add(`https://lh3.googleusercontent.com/pw/${baseId}`);
+        }
+      }
+
+      // 3. Secondary pattern: generic lh3/lh[0-9] images without /a/ (avatar) or /ogw/
+      const generalRegex = /https:\/\/lh[0-9]\.googleusercontent\.com\/([a-zA-Z0-9_\-]{40,})/g;
       while ((match = generalRegex.exec(html)) !== null) {
         const rawId = match[1].split('=')[0];
         if (!rawId.startsWith('a/') && !rawId.startsWith('ogw/') && !rawId.startsWith('pw/')) {
@@ -288,7 +316,7 @@ async function startServer() {
       if (extractedUrls.length === 0) {
         return res.status(404).json({
           error:
-            'No photos could be found at this link. Please ensure link sharing is turned on for this album in Google Photos (Share > "Create link").',
+            'No photos could be found in this album. Please check that the album contains photos and link sharing is active.',
         });
       }
 

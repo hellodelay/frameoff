@@ -244,6 +244,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
                 onClick={() => {
                   setUrl('https://photos.app.goo.gl/EsbymfNGcdqgT9fN7');
                   setError(null);
+                  setAlbumPreview(null);
                 }}
                 className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 border border-zinc-700/70 transition-colors text-[11.5px]"
               >
@@ -254,6 +255,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
                 onClick={() => {
                   setUrl('https://photos.google.com/share/AF1QipNh3qjDAuvUMQlxxcvXH0yDnNX1DnSyxISM4d1N2GtiRdcDfAEjwLMPBJBOvmEdLg?key=WWhBZ3VlMW40S0RZM0tCd2lJcHg1aTU5RnJZdnJB');
                   setError(null);
+                  setAlbumPreview(null);
                 }}
                 className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 border border-zinc-700/70 transition-colors text-[11.5px]"
               >
