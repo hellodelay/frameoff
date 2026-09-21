@@ -49,14 +49,18 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
     }
   };
 
-  const handleCheckAlbum = async () => {
-    const trimmed = url.trim();
-    if (!trimmed) {
+  const handleCheckAlbum = async (directLink?: string) => {
+    const targetLink = (typeof directLink === 'string' ? directLink : url).trim();
+    if (typeof directLink === 'string') {
+      setUrl(directLink);
+    }
+
+    if (!targetLink) {
       setError('Please enter a Google Photos shared album link.');
       return;
     }
 
-    if (!trimmed.includes('photos.app.goo.gl') && !trimmed.includes('photos.google.com')) {
+    if (!targetLink.includes('photos.app.goo.gl') && !targetLink.includes('photos.google.com')) {
       setError('Link must be a Google Photos URL (photos.app.goo.gl or photos.google.com/share/...)');
       return;
     }
@@ -66,7 +70,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
     setAlbumPreview(null);
 
     try {
-      const info = await fetchSharedAlbumInfo(trimmed);
+      const info = await fetchSharedAlbumInfo(targetLink);
       setAlbumPreview(info);
     } catch (err: any) {
       setError(err?.message || 'Could not load shared album. Make sure link sharing is enabled.');
@@ -242,9 +246,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setUrl('https://photos.app.goo.gl/EsbymfNGcdqgT9fN7');
-                  setError(null);
-                  setAlbumPreview(null);
+                  handleCheckAlbum('https://photos.app.goo.gl/EsbymfNGcdqgT9fN7');
                 }}
                 className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 border border-zinc-700/70 transition-colors text-[11.5px]"
               >
@@ -253,9 +255,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setUrl('https://photos.google.com/share/AF1QipNh3qjDAuvUMQlxxcvXH0yDnNX1DnSyxISM4d1N2GtiRdcDfAEjwLMPBJBOvmEdLg?key=WWhBZ3VlMW40S0RZM0tCd2lJcHg1aTU5RnJZdnJB');
-                  setError(null);
-                  setAlbumPreview(null);
+                  handleCheckAlbum('https://photos.google.com/share/AF1QipNh3qjDAuvUMQlxxcvXH0yDnNX1DnSyxISM4d1N2GtiRdcDfAEjwLMPBJBOvmEdLg?key=WWhBZ3VlMW40S0RZM0tCd2lJcHg1aTU5RnJZdnJB');
                 }}
                 className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-400 border border-zinc-700/70 transition-colors text-[11.5px]"
               >
@@ -347,7 +347,7 @@ export const SharedAlbumModal: React.FC<SharedAlbumModalProps> = ({
               <button
                 id="btn-inspect-shared-album"
                 type="button"
-                onClick={handleCheckAlbum}
+                onClick={() => handleCheckAlbum()}
                 disabled={isChecking || !url.trim()}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-semibold text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-50"
               >
